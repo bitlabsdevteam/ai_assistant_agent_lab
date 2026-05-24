@@ -4,6 +4,7 @@ import type { PermissionPolicy } from "../policy/permissions.js";
 import type { ArtifactStore } from "../memory/artifact-store.js";
 import type {
   ApprovalRequest,
+  OperatorMode,
   PermissionScope,
   Settings,
   TerminalSessionState,
@@ -23,6 +24,7 @@ export interface ToolContext {
   artifactStore: ArtifactStore;
   policy: PermissionPolicy;
   approvals: ApprovalRequest[];
+  operatorMode?: OperatorMode;
 }
 
 export interface Tool<TInput extends AnySchema, TOutput extends AnySchema> {

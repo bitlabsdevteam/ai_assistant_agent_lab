@@ -111,24 +111,38 @@ export class ToolRegistry {
   }> {
     const tool = this.get(name);
     const startedAt = new Date().toISOString();
-    const decision = policy.decideTool(tool.descriptor, input, undefined, context.approvals);
+    const decision = policy.decideTool(tool.descriptor, input, undefined, context.operatorMode, context.approvals);
     if (decision.outcome !== "allow") {
-      return handlePolicyOutcome(context.runId, tool.descriptor.name, input, startedAt, decision, options?.stepId);
+      return handlePolicyOutcome(
+        context.runId,
+        tool.descriptor,
+        input,
+        startedAt,
+        decision,
+        context.workingDirectory,
+        options?.stepId,
+      );
     }
 
     try {
       const result = await tool.invoke(input, context);
       const artifactName = `tool-${sanitizeFileName(tool.descriptor.name)}-${Date.now()}.json`;
       const outputArtifact = await artifactStore.writeArtifactJson(artifactName, result);
+      const enriched = enrichRecordFromResult(result);
       return {
         result,
         record: {
           id: `${context.runId}-${tool.descriptor.name}-${Date.now()}`,
           toolName: tool.descriptor.name,
+          category: tool.descriptor.category,
+          ...(options?.stepId ? { stepId: options.stepId } : {}),
           inputSummary: summarizeInput(input),
           status: "success",
           startedAt,
           completedAt: new Date().toISOString(),
+          cwd: context.workingDirectory,
+          approvalProvenance: "policy_allowed",
+          ...enriched,
           outputArtifact,
         },
       };
@@ -141,10 +155,14 @@ export class ToolRegistry {
         record: {
           id: `${context.runId}-${tool.descriptor.name}-${Date.now()}`,
           toolName: tool.descriptor.name,
+          category: tool.descriptor.category,
+          ...(options?.stepId ? { stepId: options.stepId } : {}),
           inputSummary: summarizeInput(input),
           status: appError.code === "POLICY_ERROR" ? "denied" : "failed",
           startedAt,
           completedAt: new Date().toISOString(),
+          cwd: context.workingDirectory,
+          approvalProvenance: "policy_allowed",
           error: appError.message,
         },
       };
@@ -190,10 +208,11 @@ export class ToolRegistry {
 
 function handlePolicyOutcome(
   runId: string,
-  toolName: string,
+  tool: { name: string; category: ToolCallRecord["category"]; riskLevel: "low" | "medium" | "high" },
   input: unknown,
   startedAt: string,
   decision: PolicyDecision,
+  workingDirectory: string,
   stepId?: string,
 ): {
   record: ToolCallRecord;
@@ -203,9 +222,9 @@ function handlePolicyOutcome(
     const approvalRequest = buildApprovalRequest(
       runId,
       {
-        name: toolName,
-        description: toolName,
-        category: "execution",
+        name: tool.name,
+        description: tool.name,
+        category: tool.category ?? "execution",
         riskLevel: decision.riskLevel,
         sideEffecting: true,
         permissionScope: "privileged",
@@ -221,12 +240,16 @@ function handlePolicyOutcome(
     return {
       approvalRequest,
       record: {
-        id: `${runId}-${toolName}-${Date.now()}`,
-        toolName,
+        id: `${runId}-${tool.name}-${Date.now()}`,
+        toolName: tool.name,
+        category: tool.category,
+        ...(stepId ? { stepId } : {}),
         inputSummary: summarizeInput(input),
         status: "skipped",
         startedAt,
         completedAt: new Date().toISOString(),
+        cwd: workingDirectory,
+        approvalProvenance: "pending",
         error: decision.reason,
       },
     };
@@ -234,14 +257,43 @@ function handlePolicyOutcome(
 
   return {
     record: {
-      id: `${runId}-${toolName}-${Date.now()}`,
-      toolName,
+      id: `${runId}-${tool.name}-${Date.now()}`,
+      toolName: tool.name,
+      category: tool.category,
+      ...(stepId ? { stepId } : {}),
       inputSummary: summarizeInput(input),
       status: "denied",
       startedAt,
       completedAt: new Date().toISOString(),
+      cwd: workingDirectory,
+      approvalProvenance: "denied",
       error: decision.reason,
     },
+  };
+}
+
+function enrichRecordFromResult(result: unknown): Partial<ToolCallRecord> {
+  if (!result || typeof result !== "object") {
+    return {};
+  }
+
+  const candidate = result as {
+    normalizedCommand?: string;
+    exitCode?: number;
+    stdoutSummary?: string;
+    stderrSummary?: string;
+    stdoutTruncated?: boolean;
+    stderrTruncated?: boolean;
+  };
+
+  return {
+    ...(typeof candidate.normalizedCommand === "string" ? { command: candidate.normalizedCommand } : {}),
+    ...(typeof candidate.exitCode === "number" ? { exitCode: candidate.exitCode } : {}),
+    ...(typeof candidate.stdoutSummary === "string" ? { stdoutSummary: candidate.stdoutSummary } : {}),
+    ...(typeof candidate.stderrSummary === "string" ? { stderrSummary: candidate.stderrSummary } : {}),
+    ...(typeof candidate.stdoutTruncated === "boolean" || typeof candidate.stderrTruncated === "boolean"
+      ? { outputTruncated: Boolean(candidate.stdoutTruncated || candidate.stderrTruncated) }
+      : {}),
   };
 }
 

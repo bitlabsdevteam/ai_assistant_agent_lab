@@ -46,6 +46,35 @@ export class ContextManager {
       artifact: this.artifactStore.resolve("request.json"),
     });
 
+    if (input.request.conversationContext) {
+      const chat = input.request.conversationContext;
+      sections.push(
+        [
+          `Chat session: ${chat.sessionId}`,
+          `Latest user message: ${chat.latestUserMessage}`,
+          `Conversation summary: ${chat.conversationSummary || "none"}`,
+          `Last assistant summary: ${chat.lastAssistantSummary ?? "none"}`,
+          `Recent turns: ${
+            chat.recentTurns.length > 0
+              ? chat.recentTurns.map((turn) => `${turn.role}:${turn.summary ?? turn.content}`).join(" | ")
+              : "none"
+          }`,
+        ].join("\n"),
+      );
+      sources.push({
+        kind: "chat_session",
+        label: "Chat session summary",
+        artifact: this.artifactStore.resolve("request.json"),
+      });
+      for (const artifact of chat.includedArtifactRefs) {
+        sources.push({
+          kind: "chat_session",
+          label: "Referenced chat artifact",
+          artifact,
+        });
+      }
+    }
+
     sections.push(`Run state: status=${input.state.status}, phase=${input.state.phase}, iteration=${input.state.iteration}`);
     sources.push({
       kind: "run_state",
@@ -68,6 +97,10 @@ export class ContextManager {
     }
 
     if (input.execution) {
+      const recentDiffs = input.execution.toolCalls
+        .map((call) => call.diffArtifact)
+        .filter((artifact): artifact is string => typeof artifact === "string")
+        .slice(-5);
       sections.push(
         `Execution summary: ${input.execution.summary}\nCompleted: ${input.execution.completedSteps.join(", ") || "none"}\nBlockers: ${
           input.execution.blockers.join("; ") || "none"
@@ -91,6 +124,9 @@ export class ContextManager {
         label: "Execution report",
         artifact: this.artifactStore.resolve("execution.json"),
       });
+      if (recentDiffs.length > 0) {
+        sections.push(`Current diff state: ${recentDiffs.join(" | ")}`);
+      }
     }
 
     if (input.evaluation) {
@@ -99,6 +135,13 @@ export class ContextManager {
           input.evaluation.requiredRevisions.join("; ") || "none"
         }`,
       );
+      if (input.evaluation.validationDecisions.length > 0) {
+        sections.push(
+          `Validation history: ${input.evaluation.validationDecisions
+            .map((decision) => `${decision.command.join(" ")}:${decision.status}`)
+            .join(" | ")}`,
+        );
+      }
       sources.push({
         kind: "evaluation",
         label: "Evaluation result",

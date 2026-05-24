@@ -6,12 +6,17 @@ import { PermissionPolicy } from "./policy/permissions.js";
 import { MetricsCollector } from "./telemetry/metrics.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { HarnessController, type RunResult } from "./harness/controller.js";
-import type { RunRequest, Settings } from "./schemas.js";
+import type { RunRequest, Settings, TelemetryEvent } from "./schemas.js";
+
+export interface OrchestratorOptions {
+  onEvent?: (event: TelemetryEvent) => void | Promise<void>;
+}
 
 export class Orchestrator {
   public constructor(
     private readonly settings: Settings,
     private readonly logger: Logger,
+    private readonly options: OrchestratorOptions = {},
   ) {}
 
   public async run(request: RunRequest): Promise<RunResult> {
@@ -28,6 +33,7 @@ export class Orchestrator {
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
+      ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
     });
     return controller.run(request);
   }
@@ -44,6 +50,7 @@ export class Orchestrator {
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
+      ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
     });
     return controller.recover();
   }
@@ -60,6 +67,7 @@ export class Orchestrator {
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
+      ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
     });
     return controller.resume();
   }

@@ -151,7 +151,7 @@ function stableConfigKey(config: ResolvedLLMConfig): string {
 }
 
 function createAnalysisFromTask(request: RunRequest): AnalysisResult {
-  const task = request.task.trim();
+  const task = resolveTaskWithConversationContext(request);
   const createFileMatch = task.match(/create file\s+(.+?)\s+with content\s+([\s\S]+)/i);
   const appendMatch = task.match(/append\s+([\s\S]+)\s+to\s+(.+)/i);
 
@@ -240,17 +240,51 @@ function createAnalysisFromTask(request: RunRequest): AnalysisResult {
   });
 }
 
+function resolveTaskWithConversationContext(request: RunRequest): string {
+  const task = request.task.trim();
+  if (!/\b(that|the)\s+file\b/i.test(task)) {
+    return task;
+  }
+  const referencedFile = request.conversationContext?.recentTurns
+    .slice()
+    .reverse()
+    .map((turn) => extractReferencedFile(turn.content) ?? extractReferencedFile(turn.summary ?? ""))
+    .find((value): value is string => typeof value === "string");
+  if (!referencedFile) {
+    return task;
+  }
+  return task.replaceAll(/\b(that|the)\s+file\b/gi, referencedFile);
+}
+
+function extractReferencedFile(value: string): string | undefined {
+  const createMatch = value.match(/create file\s+(.+?)\s+with content/i);
+  if (createMatch?.[1]) {
+    return createMatch[1].trim();
+  }
+  const appendMatch = value.match(/append\s+[\s\S]+\s+to\s+(.+)/i);
+  if (appendMatch?.[1]) {
+    return appendMatch[1].trim();
+  }
+  return undefined;
+}
+
 interface MockExecutorInput {
   analysis: AnalysisResult;
   step: AnalysisResult["plan"][number];
   observation: string;
+  stepMemory?: {
+    filesInspected?: string[];
+  };
+  operatorMode?: string;
 }
 
 function createExecutorAction(input: MockExecutorInput): ExecutorAction {
   const task = input.analysis.objective.trim();
   const step = input.step;
   const firstTool = step.toolNames[0];
-  if (input.observation.toLowerCase().includes("completed successfully")) {
+  if (
+    /(completed successfully|applied successfully|prepared in dry-run mode|no-op)/i.test(input.observation)
+  ) {
     return ExecutorActionSchema.parse({
       stepId: step.id,
       observation: input.observation,
@@ -298,14 +332,14 @@ function createExecutorAction(input: MockExecutorInput): ExecutorAction {
       return ExecutorActionSchema.parse({
         stepId: step.id,
         observation: input.observation,
-        actionType: "tool_call",
-        toolName: "fs.write",
-        toolInput: {
+        actionType: "patch_proposal",
+        patch: {
           path: createMatch[1].trim(),
-          content: createMatch[2],
-          createDirectories: true,
+          reason: `Create ${createMatch[1].trim()} with the requested content.`,
+          updatedContent: createMatch[2],
+          createIfMissing: true,
         },
-        rationaleSummary: "Write the requested file content directly.",
+        rationaleSummary: "Prefer a patch proposal before mutating the workspace.",
       });
     }
     const appendMatch = task.match(/append\s+([\s\S]+)\s+to\s+(.+)/i);
@@ -313,13 +347,14 @@ function createExecutorAction(input: MockExecutorInput): ExecutorAction {
       return ExecutorActionSchema.parse({
         stepId: step.id,
         observation: input.observation,
-        actionType: "tool_call",
-        toolName: "fs.write",
-        toolInput: {
+        actionType: "patch_proposal",
+        patch: {
           path: appendMatch[2].trim(),
-          createDirectories: true,
+          reason: `Append requested content to ${appendMatch[2].trim()}.`,
+          updatedContent: `${inferCurrentContent(input.stepMemory?.filesInspected ?? [])}${appendMatch[1]}`,
+          createIfMissing: false,
         },
-        rationaleSummary: "Write the updated file content after reading the target file.",
+        rationaleSummary: "Use a patch proposal to append content safely.",
       });
     }
   }
@@ -331,6 +366,19 @@ function createExecutorAction(input: MockExecutorInput): ExecutorAction {
     toolName: firstTool,
     rationaleSummary: "Use the first approved tool for the current plan step.",
   });
+}
+
+function inferCurrentContent(inputs: string[]): string {
+  const latest = inputs.at(-1);
+  if (!latest) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(latest) as { content?: string };
+    return parsed.content ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function createEvaluationSkeleton(input: { analysis: AnalysisResult; execution: ExecutionReport }): EvaluationResult {

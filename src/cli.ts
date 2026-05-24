@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -9,6 +9,7 @@ import { loadSettings } from "./config.js";
 import { AppError } from "./errors.js";
 import { createLLMClient } from "./llm/providers.js";
 import { AnalyzerAgent } from "./agents/analyzer.js";
+import { runChatCommand, type ChatCommandOptions as InteractiveChatCommandOptions } from "./chat/interactive.js";
 import { ApprovalManager } from "./harness/approvals.js";
 import { SessionSupervisor } from "./harness/session-supervisor.js";
 import { ArtifactStore } from "./memory/artifact-store.js";
@@ -47,10 +48,48 @@ interface SessionCommandOptions extends RunIdCommandOptions {
   reconcile?: boolean;
 }
 
+interface CliChatCommandOptions extends InteractiveChatCommandOptions {
+  resume?: string;
+  new?: boolean;
+}
+
 program
   .name("little-helper")
   .description("Multi-agent CLI runtime with analyzer, executor, evaluator, and durable harness state.")
   .version("0.1.0");
+
+program
+  .command("chat")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--profile <name>", "config profile", "default")
+  .option("--dry-run", "analyze without side effects", false)
+  .option("--max-iterations <number>", "maximum analyzer/executor/evaluator loops", parseInteger)
+  .option("--approval-mode <mode>", "never, on-risk, always")
+  .option("--output <format>", "text or json", "text")
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--resume <sessionId>", "resume an existing chat session")
+  .option("--new", "start a fresh session")
+  .option("--mode <mode>", "suggest, auto-edit, or full-auto", "suggest")
+  .option("--model <id>", "override the session model")
+  .option("--no-stream", "disable streaming progress")
+  .action(async (options: CliChatCommandOptions) => {
+    await runChatCommand({
+      cwd: path.resolve(options.cwd),
+      profile: options.profile,
+      dryRun: Boolean(options.dryRun),
+      ...(typeof options.maxIterations === "number" ? { maxIterations: options.maxIterations } : {}),
+      ...(typeof options.artifactDir === "string" ? { artifactDir: options.artifactDir } : {}),
+      ...(typeof options.approvalMode === "string" ? { approvalMode: options.approvalMode } : {}),
+      output: (asString(options.output) as OutputFormat | undefined) ?? "text",
+      ...(typeof options.resume === "string" ? { resume: options.resume } : {}),
+      new: Boolean(options.new),
+      stream: typeof options.stream === "boolean" ? options.stream : true,
+      ...(typeof options.mode === "string"
+        ? { mode: options.mode as NonNullable<InteractiveChatCommandOptions["mode"]> }
+        : {}),
+      ...(typeof options.model === "string" ? { model: options.model } : {}),
+    });
+  });
 
 program
   .command("run")
@@ -162,6 +201,57 @@ program
     const settings = await loadCliSettings(options.cwd, options);
     const files = await new RunStore(settings.artifactDir).createArtifactStore(runId).listRunFiles();
     render(files, settings.outputFormat);
+  });
+
+program
+  .command("diff")
+  .argument("<runId>", "run identifier")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .action(async (runId: string, options: RunIdCommandOptions) => {
+    const settings = await loadCliSettings(options.cwd, options);
+    render(await buildDiffReport(settings.artifactDir, runId), settings.outputFormat);
+  });
+
+program
+  .command("review")
+  .argument("<target...>", "run identifier or task")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--profile <name>", "config profile", "default")
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .option("--no-stream", "disable streaming progress")
+  .action(async (target: string[], options: RunCommandOptions) => {
+    const settings = await loadCliSettings(options.cwd, options);
+    const joined = target.join(" ").trim();
+    const runStore = new RunStore(settings.artifactDir);
+    const runs = await runStore.listRuns();
+    if (runs.includes(joined)) {
+      const artifactStore = runStore.createArtifactStore(joined);
+      render(await buildReviewReport(artifactStore), settings.outputFormat);
+      return;
+    }
+    const logger = createLogger(settings);
+    const orchestrator = new Orchestrator(settings, logger);
+    const request = RunRequestSchema.parse({
+      task: joined,
+      workingDirectory: path.resolve(options.cwd),
+      profile: options.profile,
+      dryRun: false,
+      maxIterations: settings.maxIterations,
+      metadata: {},
+    });
+    const result = await orchestrator.run(request);
+    render(
+      {
+        runId: result.state.runId,
+        status: result.state.status,
+        evaluation: result.evaluation,
+        finalReportArtifact: result.state.finalReportArtifact,
+      },
+      settings.outputFormat,
+    );
   });
 
 program
@@ -475,6 +565,31 @@ async function safeReadJson<T>(artifactStore: ArtifactStore, fileName: string, f
   } catch {
     return fallback;
   }
+}
+
+async function buildDiffReport(artifactDir: string, runId: string): Promise<Record<string, unknown>> {
+  const artifactStore = new RunStore(artifactDir).createArtifactStore(runId);
+  const files = await readdir(artifactStore.artifactsDirectory);
+  return {
+    runId,
+    changedFiles: await safeReadJson<string[]>(artifactStore, "changed-files.json", []),
+    patches: files.filter((file) => file.endsWith(".patch")).sort(),
+  };
+}
+
+async function buildReviewReport(artifactStore: ArtifactStore): Promise<Record<string, unknown>> {
+  let finalReport: string | undefined;
+  try {
+    finalReport = await readFile(artifactStore.resolve("final-report.md"), "utf8");
+  } catch {
+    finalReport = undefined;
+  }
+
+  return {
+    state: await safeReadJson<Record<string, unknown>>(artifactStore, "harness-state.json", {}),
+    evaluation: await safeReadJson<Record<string, unknown>>(artifactStore, "evaluation.json", {}),
+    finalReport,
+  };
 }
 
 function asString(value: unknown): string | undefined {

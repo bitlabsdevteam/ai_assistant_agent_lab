@@ -31,6 +31,7 @@ import {
   type ExecutionReport,
   type HarnessRunState,
   type RunRequest,
+  type TelemetryEvent,
 } from "../schemas.js";
 
 export interface HarnessDependencies {
@@ -41,6 +42,7 @@ export interface HarnessDependencies {
   policy: PermissionPolicy;
   logger: Logger;
   metrics: MetricsCollector;
+  onEvent?: (event: TelemetryEvent) => void | Promise<void>;
 }
 
 export interface RunResult {
@@ -387,6 +389,7 @@ export class HarnessController {
       policy: this.dependencies.policy,
       approvalManager: this.approvals,
       approvals: this.approvals.snapshot(),
+      operatorMode: request.metadata.sessionMode ?? "full-auto",
       artifactStore: this.dependencies.artifactStore,
       logger: this.dependencies.logger,
       budget,
@@ -430,15 +433,17 @@ export class HarnessController {
     details?: Record<string, unknown>,
   ): Promise<void> {
     this.dependencies.metrics.addMetric("run.event", 1, runId);
+    const telemetryEvent = createEvent({
+      runId,
+      event,
+      status,
+      ...(details ? { details } : {}),
+    });
     await this.dependencies.artifactStore.appendJsonl(
       "events.jsonl",
-      createEvent({
-        runId,
-        event,
-        status,
-        ...(details ? { details } : {}),
-      }),
+      telemetryEvent,
     );
+    await this.dependencies.onEvent?.(telemetryEvent);
   }
 
   private async readStepTrace(): Promise<AgentRuntimeContext["stepTrace"]> {

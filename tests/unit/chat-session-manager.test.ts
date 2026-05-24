@@ -1,0 +1,107 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import { ChatSessionManager } from "../../src/chat/session-manager.js";
+
+describe("chat session manager", () => {
+  it("creates a session and persists session artifacts", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-session-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const manager = new ChatSessionManager(artifactDir);
+
+    const session = await manager.createSession({ workingDirectory: workspace });
+
+    const sessionJson = JSON.parse(
+      await readFile(path.join(artifactDir, "chat", session.sessionId, "session.json"), "utf8"),
+    ) as { sessionId: string; status: string };
+    const summary = await readFile(path.join(artifactDir, "chat", session.sessionId, "summary.md"), "utf8");
+    const interactive = JSON.parse(
+      await readFile(path.join(artifactDir, "chat", session.sessionId, "interactive-session.json"), "utf8"),
+    ) as { mode: string };
+
+    expect(sessionJson.sessionId).toBe(session.sessionId);
+    expect(sessionJson.status).toBe("idle");
+    expect(interactive.mode).toBe("suggest");
+    expect(summary).toContain("Conversation Summary");
+  });
+
+  it("prepares linked run requests with session and conversation context", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-request-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const manager = new ChatSessionManager(artifactDir);
+    const session = await manager.createSession({ workingDirectory: workspace });
+
+    const first = await manager.prepareTurn({
+      sessionId: session.sessionId,
+      message: "Create file hello.txt with content hello world",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 2,
+    });
+    await manager.completeTurn({
+      sessionId: session.sessionId,
+      turnId: first.turnId,
+      runId: "run-1",
+      assistantContent: "Run run-1 finished with status completed.",
+      assistantSummary: "Created hello.txt",
+      artifactRefs: ["/tmp/run-1/final-report.md"],
+      runStatus: "completed",
+    });
+
+    const second = await manager.prepareTurn({
+      sessionId: session.sessionId,
+      message: "Append !!! to that file",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 2,
+    });
+
+    expect(first.request.metadata.sessionId).toBe(session.sessionId);
+    expect(first.request.metadata.turnId).toBe(first.turnId);
+    expect(second.request.conversationContext?.sessionId).toBe(session.sessionId);
+    expect(second.request.conversationContext?.recentTurns.some((turn) => turn.runId === "run-1")).toBe(true);
+    expect(second.request.conversationContext?.includedArtifactRefs).toContain("/tmp/run-1/final-report.md");
+  });
+
+  it("compacts older turns into summary while preserving recent turns", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-compact-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const manager = new ChatSessionManager(artifactDir, {
+      compactionThresholdChars: 80,
+      recentTurnLimit: 2,
+    });
+    const session = await manager.createSession({ workingDirectory: workspace });
+
+    for (let index = 0; index < 4; index += 1) {
+      const prepared = await manager.prepareTurn({
+        sessionId: session.sessionId,
+        message: `Create file note-${index}.txt with content this is a long content block ${index}`,
+        profile: "default",
+        dryRun: false,
+        maxIterations: 1,
+      });
+      await manager.completeTurn({
+        sessionId: session.sessionId,
+        turnId: prepared.turnId,
+        runId: `run-${index}`,
+        assistantContent: `Completed run-${index}`,
+        assistantSummary: `Created note-${index}.txt`,
+        artifactRefs: [`/tmp/run-${index}/final-report.md`],
+        runStatus: "completed",
+      });
+    }
+
+    const refreshed = await manager.refreshSession(session.sessionId);
+    const turns = await manager.listTurns(session.sessionId);
+    const summary = await readFile(path.join(artifactDir, "chat", session.sessionId, "summary.md"), "utf8");
+    const next = await manager.buildConversationContext(session.sessionId, "turn-next", "Append more to that file");
+
+    expect(refreshed.conversationSummary.length).toBeGreaterThan(0);
+    expect(summary).toContain("user:");
+    expect(turns.length).toBe(8);
+    expect(next.recentTurns).toHaveLength(2);
+  });
+});

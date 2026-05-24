@@ -59,6 +59,7 @@ describe("ContextManager", () => {
         changedFiles: [],
         producedArtifacts: [],
         blockers: [],
+        needsEvaluation: false,
         summary: "Prepared to execute step.",
       },
       stepTrace: [

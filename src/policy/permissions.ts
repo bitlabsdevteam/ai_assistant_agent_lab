@@ -1,7 +1,15 @@
 import path from "node:path";
 
 import { AppError } from "../errors.js";
-import type { ApprovalRequest, ApprovalMode, PermissionScope, RiskLevel, Settings, ToolDescriptor } from "../schemas.js";
+import type {
+  ApprovalRequest,
+  ApprovalMode,
+  OperatorMode,
+  PermissionScope,
+  RiskLevel,
+  Settings,
+  ToolDescriptor,
+} from "../schemas.js";
 import { classifyCommandRisk } from "./safety.js";
 
 export interface PolicyDecision {
@@ -29,6 +37,7 @@ export class PermissionPolicy {
     tool: ToolDescriptor,
     input: unknown,
     approvalMode: ApprovalMode = this.settings.approvalMode,
+    operatorMode: OperatorMode = "full-auto",
     approvals: ApprovalRequest[] = [],
   ): PolicyDecision {
     const riskLevel = inferRiskLevel(tool, input);
@@ -77,6 +86,22 @@ export class PermissionPolicy {
       return {
         outcome: "require_approval",
         reason: "High-risk action requires approval.",
+        riskLevel,
+      };
+    }
+
+    if (operatorMode === "suggest" && (tool.category === "edit" || tool.name === "shell.exec")) {
+      return {
+        outcome: "require_approval",
+        reason: "Suggest mode requires approval for edits and shell commands.",
+        riskLevel,
+      };
+    }
+
+    if (operatorMode === "auto-edit" && tool.name === "shell.exec") {
+      return {
+        outcome: "require_approval",
+        reason: "Auto-edit mode still requires approval for shell commands.",
         riskLevel,
       };
     }

@@ -1,8 +1,16 @@
-import type { AnalysisResult, ExecutionReport, PlanStep, RunRequest } from "../schemas.js";
+import type { AnalysisResult, ExecutionReport, ExecutorStepMemory, PlanStep, RunRequest } from "../schemas.js";
 import type { AgentContextSnapshot } from "../schemas.js";
 
 export function buildAnalyzerPrompt(request: RunRequest, contextSnapshot?: AgentContextSnapshot): string {
-  return `Analyze the following task and return structured JSON: ${request.task}\n\nContext:\n${
+  const chatContext = request.conversationContext
+    ? [
+        `Chat session: ${request.conversationContext.sessionId}`,
+        `Latest user message: ${request.conversationContext.latestUserMessage}`,
+        `Conversation summary: ${request.conversationContext.conversationSummary || "none"}`,
+        `Last assistant summary: ${request.conversationContext.lastAssistantSummary ?? "none"}`,
+      ].join("\n")
+    : "No chat context.";
+  return `Analyze the following task and return structured JSON: ${request.task}\n\nChat:\n${chatContext}\n\nContext:\n${
     contextSnapshot?.summary ?? "No prior context."
   }`;
 }
@@ -12,6 +20,7 @@ export function buildExecutorPrompt(
   step: PlanStep,
   contextSnapshot?: AgentContextSnapshot,
   observation?: string,
+  stepMemory?: ExecutorStepMemory,
 ): string {
   return [
     "Execute the current plan step using one explicit typed action.",
@@ -21,7 +30,9 @@ export function buildExecutorPrompt(
     `Allowed tools for this step: ${step.toolNames.join(", ") || "none"}`,
     `Expected output: ${step.expectedOutput}`,
     `Current observation: ${observation ?? `Starting step '${step.title}'.`}`,
-    "Choose exactly one action: tool_call, final_response, or clarification.",
+    `Step memory: ${stepMemory ? JSON.stringify(stepMemory) : "none"}`,
+    "Choose exactly one action: tool_call, patch_proposal, final_response, clarification, or handoff_to_evaluator.",
+    "Prefer patch_proposal over direct write tools when a file edit is needed.",
     "If you choose tool_call, use one of the allowed tools and provide concrete toolInput when you know it.",
     `Context:\n${contextSnapshot?.summary ?? "No prior context."}`,
   ].join("\n\n");

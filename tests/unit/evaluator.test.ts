@@ -56,6 +56,7 @@ function createExecution(): ExecutionReport {
     changedFiles: [],
     producedArtifacts: [],
     blockers: [],
+    needsEvaluation: false,
     summary: "done",
   };
 }

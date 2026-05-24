@@ -3,6 +3,7 @@ import { z } from "zod";
 export const RiskLevelSchema = z.enum(["low", "medium", "high"]);
 export const ApprovalModeSchema = z.enum(["never", "on-risk", "always"]);
 export const OutputFormatSchema = z.enum(["text", "json"]);
+export const OperatorModeSchema = z.enum(["suggest", "auto-edit", "full-auto"]);
 export const PermissionScopeSchema = z.enum([
   "read-only",
   "workspace",
@@ -20,13 +21,47 @@ export const ToolCategorySchema = z.enum([
   "validation",
 ]);
 
+export const ChatTurnRoleSchema = z.enum(["user", "assistant", "system"]);
+export const ChatSessionStatusSchema = z.enum(["idle", "running", "awaiting_approval", "blocked"]);
+
 export const RunRequestSchema = z.object({
   task: z.string().min(1),
   workingDirectory: z.string().min(1),
   profile: z.string().default("default"),
   dryRun: z.boolean().default(false),
   maxIterations: z.number().int().positive().default(3),
-  metadata: z.record(z.string(), z.string()).default({}),
+  metadata: z
+    .object({
+      sessionId: z.string().min(1).optional(),
+      turnId: z.string().min(1).optional(),
+      sessionMode: OperatorModeSchema.optional(),
+      selectedModel: z.string().min(1).optional(),
+    })
+    .catchall(z.string())
+    .default({}),
+  conversationContext: z
+    .object({
+      sessionId: z.string().min(1),
+      turnId: z.string().min(1),
+      latestUserMessage: z.string().min(1),
+      conversationSummary: z.string().default(""),
+      lastAssistantSummary: z.string().optional(),
+      recentTurns: z
+        .array(
+          z.object({
+            turnId: z.string().min(1),
+            role: ChatTurnRoleSchema,
+            content: z.string().min(1),
+            timestamp: z.string(),
+            runId: z.string().min(1).optional(),
+            artifactRefs: z.array(z.string()).default([]),
+            summary: z.string().optional(),
+          }),
+        )
+        .default([]),
+      includedArtifactRefs: z.array(z.string()).default([]),
+    })
+    .optional(),
 });
 
 export const PlanStepSchema = z.object({
@@ -52,12 +87,22 @@ export const AnalysisResultSchema = z.object({
 export const ToolCallRecordSchema = z.object({
   id: z.string(),
   toolName: z.string(),
+  category: ToolCategorySchema.optional(),
+  stepId: z.string().optional(),
   inputSummary: z.string(),
   status: z.enum(["success", "failed", "denied", "skipped"]),
   startedAt: z.string(),
   completedAt: z.string().optional(),
   exitCode: z.number().int().optional(),
+  cwd: z.string().optional(),
+  command: z.string().optional(),
+  stdoutSummary: z.string().optional(),
+  stderrSummary: z.string().optional(),
+  outputTruncated: z.boolean().optional(),
+  approvalProvenance: z.enum(["none", "policy_allowed", "pending", "approved", "denied"]).optional(),
   outputArtifact: z.string().optional(),
+  diffArtifact: z.string().optional(),
+  transcriptArtifact: z.string().optional(),
   error: z.string().optional(),
 });
 
@@ -68,6 +113,7 @@ export const ExecutionReportSchema = z.object({
   changedFiles: z.array(z.string()),
   producedArtifacts: z.array(z.string()),
   blockers: z.array(z.string()),
+  needsEvaluation: z.boolean().default(false),
   summary: z.string(),
 });
 
@@ -157,7 +203,7 @@ export const MCPToolResultSchema = z.object({
 export const AgentStepStateSchema = z.object({
   stepId: z.string(),
   observation: z.string(),
-  chosenActionType: z.enum(["tool_call", "final_response", "clarification"]),
+  chosenActionType: z.enum(["tool_call", "patch_proposal", "final_response", "clarification", "handoff_to_evaluator"]),
   chosenActionName: z.string(),
   rationaleSummary: z.string(),
   resultSummary: z.string().optional(),
@@ -165,17 +211,54 @@ export const AgentStepStateSchema = z.object({
 
 const ToolInputScalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 const ToolInputArraySchema = z.array(ToolInputScalarSchema);
+const ToolInputValueSchema: z.ZodType<string | number | boolean | null | Array<string | number | boolean | null>> =
+  z.union([ToolInputScalarSchema, ToolInputArraySchema]);
 
-export const ExecutorActionSchema = z.object({
-  stepId: z.string().min(1),
-  observation: z.string().min(1),
-  actionType: z.enum(["tool_call", "final_response", "clarification"]),
-  toolName: z.string().min(1).optional(),
-  toolInput: z.record(z.string(), z.union([ToolInputScalarSchema, ToolInputArraySchema])).default({}),
-  rationaleSummary: z.string().min(1),
-  finalResponse: z.string().optional(),
-  clarificationQuestion: z.string().optional(),
+export const PatchProposalSchema = z.object({
+  path: z.string().min(1),
+  reason: z.string().min(1),
+  updatedContent: z.string(),
+  createIfMissing: z.boolean().default(false),
 });
+
+export const ExecutorActionSchema = z.discriminatedUnion("actionType", [
+  z.object({
+    stepId: z.string().min(1),
+    observation: z.string().min(1),
+    actionType: z.literal("tool_call"),
+    toolName: z.string().min(1),
+    toolInput: z.record(z.string(), ToolInputValueSchema).default({}),
+    rationaleSummary: z.string().min(1),
+  }),
+  z.object({
+    stepId: z.string().min(1),
+    observation: z.string().min(1),
+    actionType: z.literal("patch_proposal"),
+    patch: PatchProposalSchema,
+    rationaleSummary: z.string().min(1),
+  }),
+  z.object({
+    stepId: z.string().min(1),
+    observation: z.string().min(1),
+    actionType: z.literal("final_response"),
+    rationaleSummary: z.string().min(1),
+    finalResponse: z.string().min(1),
+  }),
+  z.object({
+    stepId: z.string().min(1),
+    observation: z.string().min(1),
+    actionType: z.literal("clarification"),
+    rationaleSummary: z.string().min(1),
+    clarificationQuestion: z.string().min(1),
+  }),
+  z.object({
+    stepId: z.string().min(1),
+    observation: z.string().min(1),
+    actionType: z.literal("handoff_to_evaluator"),
+    rationaleSummary: z.string().min(1),
+    handoffReason: z.string().min(1),
+  }),
+]);
 
 export const TerminalSessionStateSchema = z.object({
   sessionId: z.string(),
@@ -190,6 +273,50 @@ export const TerminalSessionStateSchema = z.object({
   terminationReason: z
     .enum(["completed", "failed", "timed_out", "operator_cancelled", "stale_on_recovery", "process_missing"])
     .optional(),
+});
+
+export const ChatTurnRecordSchema = z.object({
+  turnId: z.string().min(1),
+  role: ChatTurnRoleSchema,
+  content: z.string().min(1),
+  timestamp: z.string(),
+  runId: z.string().min(1).optional(),
+  artifactRefs: z.array(z.string()).default([]),
+  summary: z.string().optional(),
+});
+
+export const ChatSessionStateSchema = z.object({
+  sessionId: z.string().min(1),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  workingDirectory: z.string().min(1),
+  status: ChatSessionStatusSchema,
+  activeRunId: z.string().min(1).optional(),
+  turns: z.number().int().nonnegative(),
+  conversationSummary: z.string().default(""),
+  pendingApprovalIds: z.array(z.string()).default([]),
+  lastRunStatus: z.lazy(() => HarnessStatusSchema).optional(),
+});
+
+export const InteractiveSessionStateSchema = z.object({
+  sessionId: z.string().min(1),
+  updatedAt: z.string(),
+  mode: OperatorModeSchema.default("suggest"),
+  selectedModel: z.string().min(1).optional(),
+  activeRunId: z.string().min(1).optional(),
+  pendingPatchArtifact: z.string().min(1).optional(),
+  recentActivitySummary: z.string().default(""),
+});
+
+export const ExecutorStepMemorySchema = z.object({
+  stepId: z.string().min(1),
+  objective: z.string().min(1),
+  filesInspected: z.array(z.string()).default([]),
+  proposedDiffArtifacts: z.array(z.string()).default([]),
+  appliedDiffArtifacts: z.array(z.string()).default([]),
+  commandOutputs: z.array(z.string()).default([]),
+  blockers: z.array(z.string()).default([]),
+  remainingSuccessCriteria: z.array(z.string()).default([]),
 });
 
 export const RunBudgetStateSchema = z.object({
@@ -290,6 +417,7 @@ export const ContextSourceSchema = z.object({
   kind: z.enum([
     "instruction",
     "user_task",
+    "chat_session",
     "run_state",
     "analysis",
     "execution",
@@ -310,6 +438,25 @@ export const AgentContextSnapshotSchema = z.object({
   promptChars: z.number().int().nonnegative(),
   compacted: z.boolean(),
   sources: z.array(ContextSourceSchema),
+});
+
+export const ChatEventTypeSchema = z.enum([
+  "chat.session_started",
+  "chat.turn_started",
+  "chat.turn_completed",
+  "chat.command_invoked",
+]);
+
+export const ChatEventSchema = z.object({
+  type: ChatEventTypeSchema,
+  timestamp: z.string(),
+  sessionId: z.string().min(1),
+  turnId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  command: z.string().min(1).optional(),
+  status: z.string().min(1).optional(),
+  message: z.string().min(1).optional(),
+  approvalId: z.string().min(1).optional(),
 });
 
 export const ToolDescriptorSchema = z.object({
@@ -374,8 +521,11 @@ export const SettingsSchema = z.object({
 export type RiskLevel = z.infer<typeof RiskLevelSchema>;
 export type ApprovalMode = z.infer<typeof ApprovalModeSchema>;
 export type OutputFormat = z.infer<typeof OutputFormatSchema>;
+export type OperatorMode = z.infer<typeof OperatorModeSchema>;
 export type PermissionScope = z.infer<typeof PermissionScopeSchema>;
 export type ToolCategory = z.infer<typeof ToolCategorySchema>;
+export type ChatTurnRole = z.infer<typeof ChatTurnRoleSchema>;
+export type ChatSessionStatus = z.infer<typeof ChatSessionStatusSchema>;
 export type RunRequest = z.infer<typeof RunRequestSchema>;
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 export type AnalysisResult = z.infer<typeof AnalysisResultSchema>;
@@ -391,7 +541,12 @@ export type MCPDiscovery = z.infer<typeof MCPDiscoverySchema>;
 export type MCPToolResult = z.infer<typeof MCPToolResultSchema>;
 export type AgentStepState = z.infer<typeof AgentStepStateSchema>;
 export type ExecutorAction = z.infer<typeof ExecutorActionSchema>;
+export type PatchProposal = z.infer<typeof PatchProposalSchema>;
 export type TerminalSessionState = z.infer<typeof TerminalSessionStateSchema>;
+export type ChatTurnRecord = z.infer<typeof ChatTurnRecordSchema>;
+export type ChatSessionState = z.infer<typeof ChatSessionStateSchema>;
+export type InteractiveSessionState = z.infer<typeof InteractiveSessionStateSchema>;
+export type ExecutorStepMemory = z.infer<typeof ExecutorStepMemorySchema>;
 export type RunBudgetState = z.infer<typeof RunBudgetStateSchema>;
 export type HarnessStatus = z.infer<typeof HarnessStatusSchema>;
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
@@ -401,6 +556,8 @@ export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;
 export type MetricRecord = z.infer<typeof MetricRecordSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type AgentContextSnapshot = z.infer<typeof AgentContextSnapshotSchema>;
+export type ChatEventType = z.infer<typeof ChatEventTypeSchema>;
+export type ChatEvent = z.infer<typeof ChatEventSchema>;
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
 export type LLMRoleOverride = z.infer<typeof LLMRoleOverrideSchema>;
 export type Settings = z.infer<typeof SettingsSchema>;

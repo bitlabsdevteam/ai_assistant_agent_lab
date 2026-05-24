@@ -14,8 +14,15 @@ const ExecInputSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
 });
 const ExecOutputSchema = z.object({
+  command: z.array(z.string()),
+  normalizedCommand: z.string(),
+  cwd: z.string(),
   stdout: z.string(),
   stderr: z.string(),
+  stdoutSummary: z.string(),
+  stderrSummary: z.string(),
+  stdoutTruncated: z.boolean(),
+  stderrTruncated: z.boolean(),
   exitCode: z.number().int(),
 });
 
@@ -46,8 +53,15 @@ export class ShellTool implements Tool<typeof ExecInputSchema, typeof ExecOutput
     this.validate(input, context);
     if (context.dryRun) {
       return {
+        command: input.command,
+        normalizedCommand: input.command.join(" "),
+        cwd: context.workingDirectory,
         stdout: "",
         stderr: "",
+        stdoutSummary: "Dry run: command not executed.",
+        stderrSummary: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
         exitCode: 0,
       };
     }
@@ -136,8 +150,15 @@ export class ShellTool implements Tool<typeof ExecInputSchema, typeof ExecOutput
           exitCode,
         );
         resolve({
+          command: input.command,
+          normalizedCommand: input.command.join(" "),
+          cwd: context.workingDirectory,
           stdout: truncate(redactSecrets(stdout), context.settings.maxToolOutputChars),
           stderr: truncate(redactSecrets(stderr), context.settings.maxToolOutputChars),
+          stdoutSummary: summarizeStream(stdout),
+          stderrSummary: summarizeStream(stderr),
+          stdoutTruncated: stdout.length > context.settings.maxToolOutputChars,
+          stderrTruncated: stderr.length > context.settings.maxToolOutputChars,
           exitCode: exitCode ?? 1,
         });
       });
@@ -250,6 +271,14 @@ function truncate(value: string, maxLength: number): string {
     return value;
   }
   return `${value.slice(0, maxLength)}\n...[truncated]`;
+}
+
+function summarizeStream(value: string): string {
+  const normalized = redactSecrets(value).replaceAll(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    return "";
+  }
+  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 240)}...`;
 }
 
 async function persistTerminalState(

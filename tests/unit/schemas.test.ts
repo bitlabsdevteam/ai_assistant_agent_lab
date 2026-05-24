@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   AnalysisResultSchema,
+  ChatSessionStateSchema,
+  ChatTurnRecordSchema,
   HarnessRunStateSchema,
+  InteractiveSessionStateSchema,
   RunBudgetStateSchema,
   RunRequestSchema,
 } from "../../src/schemas.js";
@@ -58,5 +61,42 @@ describe("schemas", () => {
 
     expect(state.status).toBe("created");
     expect(budget.toolCallsUsed).toBe(0);
+  });
+
+  it("validates chat session and turn records", () => {
+    const turn = ChatTurnRecordSchema.parse({
+      turnId: "turn-1",
+      role: "user",
+      content: "Create file hello.txt with content hello",
+      timestamp: new Date().toISOString(),
+      artifactRefs: [],
+    });
+    const session = ChatSessionStateSchema.parse({
+      sessionId: "session-1",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      workingDirectory: "/tmp/workspace",
+      status: "idle",
+      turns: 1,
+      conversationSummary: "",
+      pendingApprovalIds: [],
+      lastRunStatus: "completed",
+    });
+
+    expect(turn.role).toBe("user");
+    expect(session.status).toBe("idle");
+  });
+
+  it("validates interactive session state", () => {
+    const state = InteractiveSessionStateSchema.parse({
+      sessionId: "session-1",
+      updatedAt: new Date().toISOString(),
+      mode: "suggest",
+      selectedModel: "gpt-5",
+      recentActivitySummary: "Proposed a patch.",
+    });
+
+    expect(state.mode).toBe("suggest");
+    expect(state.selectedModel).toBe("gpt-5");
   });
 });

@@ -74,7 +74,7 @@ describe("ExecutorAgent", () => {
     const stepTrace: Array<{
       stepId: string;
       observation: string;
-      chosenActionType: "tool_call" | "final_response" | "clarification";
+      chosenActionType: "tool_call" | "patch_proposal" | "final_response" | "clarification" | "handoff_to_evaluator";
       chosenActionName: string;
       rationaleSummary: string;
       resultSummary?: string;
@@ -112,8 +112,9 @@ describe("ExecutorAgent", () => {
     expect(stepTrace).toHaveLength(4);
     expect(stepTrace[0]?.chosenActionType).toBe("tool_call");
     expect(stepTrace[1]?.chosenActionType).toBe("final_response");
-    expect(stepTrace[2]?.chosenActionName).toBe("fs.write");
-    expect(stepTrace[2]?.resultSummary).toContain("completed successfully");
+    expect(stepTrace[2]?.chosenActionType).toBe("patch_proposal");
+    expect(stepTrace[2]?.chosenActionName).toBe("patch.apply");
+    expect(stepTrace[2]?.resultSummary).toContain("applied successfully");
     expect(stepTrace[3]?.chosenActionType).toBe("final_response");
   });
 
@@ -181,5 +182,65 @@ describe("ExecutorAgent", () => {
 
     expect(result.completedSteps).toEqual(["read-file", "patch-file"]);
     expect(await readFile(path.join(workspace, "notes.txt"), "utf8")).toBe("before after");
+  });
+
+  it("proposes a patch and waits for approval in suggest mode", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-executor-suggest-"));
+    const settings = createSettings(workspace);
+    const artifactStore = new ArtifactStore(settings.artifactDir, "run-1");
+    await artifactStore.init();
+
+    const analysis: AnalysisResult = {
+      objective: "Create file gated.txt with content gated",
+      assumptions: [],
+      unknowns: [],
+      successCriteria: ["File 'gated.txt' exists with the requested content."],
+      plan: [
+        {
+          id: "write-file",
+          title: "Write file",
+          description: "Write the requested file.",
+          agent: "executor",
+          toolNames: ["fs.write"],
+          expectedOutput: "gated.txt created",
+          approvalRequired: false,
+        },
+      ],
+      requiredTools: ["fs.write"],
+      riskLevel: "low",
+    };
+
+    const result = await new ExecutorAgent().run(
+      { analysis },
+      {
+        runId: "run-1",
+        workingDirectory: workspace,
+        settings,
+        permissions: ["workspace", "shell"],
+        dryRun: false,
+        llm: createLLMClient(settings),
+        tools: await ToolRegistry.create(settings),
+        policy: new PermissionPolicy(settings),
+        approvalManager: new ApprovalManager(artifactStore),
+        approvals: [],
+        operatorMode: "suggest",
+        artifactStore,
+        logger: createLogger(settings),
+        budget: {
+          maxIterations: 2,
+          toolCallsUsed: 0,
+          promptCharsUsed: 0,
+          estimatedCostUsd: 0,
+        },
+        stepTrace: [],
+        signal: AbortSignal.timeout(5_000),
+      },
+    );
+
+    expect(result.completedSteps).toEqual([]);
+    expect(result.skippedSteps).toEqual(["write-file"]);
+    expect(result.blockers[0]).toMatch(/requires approval/i);
+    await expect(readFile(path.join(workspace, "gated.txt"), "utf8")).rejects.toThrow();
+    expect((await artifactStore.readJson("approvals.json"))).toHaveLength(1);
   });
 });

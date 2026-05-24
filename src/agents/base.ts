@@ -9,6 +9,7 @@ import type {
   AgentContextSnapshot,
   AgentStepState,
   ApprovalRequest,
+  OperatorMode,
   PermissionScope,
   RunBudgetState,
   Settings,
@@ -25,6 +26,7 @@ export interface AgentRuntimeContext {
   policy: PermissionPolicy;
   approvalManager: ApprovalManager;
   approvals: ApprovalRequest[];
+  operatorMode?: OperatorMode;
   artifactStore: ArtifactStore;
   logger: Logger;
   budget: RunBudgetState;
