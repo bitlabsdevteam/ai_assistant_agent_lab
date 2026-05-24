@@ -1,0 +1,7 @@
+services:
+  little-helper:
+    build: .
+    command: ["doctor"]
+    environment:
+      LITTLE_HELPER_ENV: development
+      LITTLE_HELPER_LLM_PROVIDER: mock
