@@ -4,6 +4,7 @@ import {
   AnalysisResultSchema,
   ExecutionReportSchema,
   EvaluationResultSchema,
+  RevisionRecordSchema,
   HarnessRunStateSchema,
   RunBudgetStateSchema,
   RunRequestSchema,
@@ -14,6 +15,7 @@ import {
   type HarnessRunState,
   type RunBudgetState,
   type RunRequest,
+  type RevisionRecord,
 } from "../schemas.js";
 
 export interface RecoveredRun {
@@ -22,6 +24,7 @@ export interface RecoveredRun {
   analysis: AnalysisResult | undefined;
   execution: ExecutionReport | undefined;
   evaluation: EvaluationResult | undefined;
+  revisions: RevisionRecord[];
   budget: RunBudgetState;
   sessions: TerminalSessionState[];
 }
@@ -40,6 +43,7 @@ export class RecoveryManager {
     const analysis = await this.readOptional("analysis.json", AnalysisResultSchema);
     const execution = await this.readOptional("execution.json", ExecutionReportSchema);
     const evaluation = await this.readOptional("evaluation.json", EvaluationResultSchema);
+    const revisions = await this.readOptionalArray("revisions.json", RevisionRecordSchema);
     const budget = RunBudgetStateSchema.parse(await this.artifactStore.readJson("budget.json"));
     const sessions = await this.reconcileSessions();
     return {
@@ -48,6 +52,7 @@ export class RecoveryManager {
       analysis,
       execution,
       evaluation,
+      revisions,
       budget,
       sessions,
     };
@@ -65,6 +70,18 @@ export class RecoveryManager {
       return schema.parse(await this.artifactStore.readJson(fileName));
     } catch {
       return undefined;
+    }
+  }
+
+  private async readOptionalArray<T>(
+    fileName: string,
+    schema: { parse(value: unknown): T },
+  ): Promise<T[]> {
+    try {
+      const raw = await this.artifactStore.readJson<unknown[]>(fileName);
+      return raw.map((item) => schema.parse(item));
+    } catch {
+      return [];
     }
   }
 }
