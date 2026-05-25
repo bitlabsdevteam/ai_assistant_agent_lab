@@ -198,9 +198,22 @@ export class PermissionPolicy {
 
   private hasApprovedNetworkAccess(toolName: string, input: unknown, approvals: ApprovalRequest[] = []): boolean {
     const digest = createApprovalInputDigest(input);
-    return approvals.some(
-      (approval) => approval.status === "approved" && approval.toolName === toolName && approval.inputDigest === digest,
-    );
+    const target = getNetworkTarget(toolName, input);
+    return approvals.some((approval) => {
+      if (approval.status !== "approved" || approval.toolName !== toolName) {
+        return false;
+      }
+      if (approval.inputDigest === digest) {
+        return true;
+      }
+      if (!target) {
+        return false;
+      }
+      if (approval.input !== undefined) {
+        return getNetworkTarget(toolName, approval.input) === target;
+      }
+      return toolName === "web.search";
+    });
   }
 }
 
@@ -243,7 +256,7 @@ export function buildApprovalRequest(
 }
 
 export function createApprovalInputDigest(input: unknown): string {
-  return JSON.stringify(input);
+  return stableSerialize(input);
 }
 
 function getNetworkTarget(toolName: string, input: unknown): string | undefined {
@@ -255,4 +268,23 @@ function getNetworkTarget(toolName: string, input: unknown): string | undefined 
     return typeof parsed.url === "string" ? parsed.url : undefined;
   }
   return undefined;
+}
+
+function stableSerialize(input: unknown): string {
+  return JSON.stringify(normalizeForDigest(input));
+}
+
+function normalizeForDigest(input: unknown): unknown {
+  if (Array.isArray(input)) {
+    return input.map((entry) => normalizeForDigest(entry));
+  }
+  if (!input || typeof input !== "object") {
+    return input;
+  }
+  return Object.fromEntries(
+    Object.entries(input)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [key, normalizeForDigest(value)]),
+  );
 }

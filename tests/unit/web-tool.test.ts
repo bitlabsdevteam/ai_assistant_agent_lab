@@ -274,6 +274,77 @@ describe("web search tool", () => {
     expect(result.record.status).toBe("success");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("allows an approved web.search replay when schema defaults change the validated input shape", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-web-tool-approved-defaults-"));
+    await writeFile(path.join(workspace, ".env"), "PERPLEXITY_API_KEY=test-perplexity-key\n", "utf8");
+    const settings = createSettingsWithNetworkDisabled(workspace);
+    const artifactStore = new ArtifactStore(settings.artifactDir, "run-1");
+    await artifactStore.init();
+
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            search_id: "search-approved-defaults",
+            results: [
+              {
+                title: "Tokyo Weather",
+                url: "https://example.com/weather",
+                snippet: "Sunny.",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const rawInput = {
+      query: "weather in Tokyo, Japan",
+    };
+    const approvals = [
+      {
+        id: "approval-1",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+        status: "approved" as const,
+        toolName: "web.search",
+        reason: "Approved by user",
+        riskLevel: "high" as const,
+        actionSummary: "Allow web.search",
+        inputDigest: createApprovalInputDigest(rawInput),
+        input: rawInput,
+        decisionAt: new Date().toISOString(),
+      },
+    ];
+
+    const registry = await ToolRegistry.create(settings);
+    const result = await registry.invoke(
+      "web.search",
+      rawInput,
+      {
+        runId: "run-1",
+        workingDirectory: workspace,
+        dryRun: false,
+        permissions: ["network"],
+        signal: AbortSignal.timeout(5_000),
+        settings,
+        artifactStore,
+        policy: new PermissionPolicy(settings),
+        approvals,
+      },
+      artifactStore,
+      new PermissionPolicy(settings),
+    );
+
+    expect(result.record.status).toBe("success");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 function normalizeRequestUrl(input: string | URL | Request): string {

@@ -578,9 +578,15 @@ function createWorkingIndicatorController(
     return createNoopWorkingIndicatorController();
   }
 
+  const green = "\u001b[32m";
+  const reset = "\u001b[39m";
   const delayMs = options.delayMs ?? 200;
   const frameIntervalMs = options.frameIntervalMs ?? 350;
-  const frames = ["Working.", "Working..", "Working..."] as const;
+  const frames = [
+    `Working${green}.${reset}`,
+    `Working${green}..${reset}`,
+    `Working${green}...${reset}`,
+  ] as const;
   const interactiveTTY = writer.isTTY?.() ?? false;
   let activationTimer: ReturnType<typeof setTimeout> | undefined;
   let frameTimer: ReturnType<typeof setInterval> | undefined;

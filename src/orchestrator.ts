@@ -16,6 +16,10 @@ export interface OrchestratorOptions {
   llm?: LLMClient;
 }
 
+export interface OrchestratorRunOptions {
+  runId?: string;
+}
+
 export class Orchestrator {
   public constructor(
     private readonly settings: Settings,
@@ -23,10 +27,10 @@ export class Orchestrator {
     private readonly options: OrchestratorOptions = {},
   ) {}
 
-  public async run(request: RunRequest): Promise<RunResult> {
+  public async run(request: RunRequest, options: OrchestratorRunOptions = {}): Promise<RunResult> {
     const runStore = new RunStore(this.settings.artifactDir);
     await runStore.init();
-    const runId = createRunId();
+    const runId = options.runId ?? createRunId();
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
     const llm = this.options.llm ?? createLLMClient(this.settings);

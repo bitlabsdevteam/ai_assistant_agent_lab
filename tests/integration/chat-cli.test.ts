@@ -124,7 +124,7 @@ describe("chat cli", () => {
       },
     );
 
-    expect(console.output.some((entry) => entry.includes("Working."))).toBe(true);
+    expect(console.output.some((entry) => stripAnsi(entry).includes("Working."))).toBe(true);
     expect(countOccurrences(console.output.join(""), "Hello from chat.")).toBe(1);
     expect(console.output.filter((entry) => entry.includes("> ")).every((entry) => !entry.includes("Working"))).toBe(true);
   }, 10_000);
@@ -608,7 +608,7 @@ describe("chat cli", () => {
     const output = normalizeConsoleOutput(console.output);
     expect(output).toContain("I need approval to search the web before I can continue.");
     expect(output).toContain("Network access needs approval.");
-    expect(output).toContain('Type "approve" to continue, or "deny" to reject.');
+    expect(output).toContain("Agent is accessing the web search tool. Yes or No.");
     expect(output).toContain("Searching the web");
     expect(output).toContain("Finished searching the web");
     expect(output).toContain('Found 1 web result(s) for "what is the weather in Tokyo?". Top result: Tokyo weather - Tokyo is 24C with light rain.');
@@ -803,7 +803,7 @@ describe("chat cli", () => {
     const output = console.output.join("\n");
     expect(output).toContain("I need approval to edit files before I can continue.");
     expect(output).toContain("This action needs approval.");
-    expect(output).toContain('Type "approve" to continue, or "deny" to reject.');
+    expect(output).toContain("Agent is trying to edit files. Yes or No.");
     expect(output).not.toContain("Approval requested: Edit files.");
     expect(console.output.some((entry) => entry.includes("(approval)> "))).toBe(true);
     expect(output).not.toContain("run:");
@@ -969,7 +969,7 @@ describe("chat cli", () => {
     const output = console.output.join("\n");
     expect(runInvocations).toBe(1);
     expect(resumeInvocations).toBe(0);
-    expect(output).toContain('Type "approve" to continue, or "deny" to reject.');
+    expect(output).toContain("Agent is trying to edit files. Yes or No.");
     expect(output).toContain("Denied approval-deny for run run-implicit-deny.");
     expect(output).not.toContain("Approval received. The pending run may proceed.");
   });
@@ -1169,7 +1169,11 @@ function createSettings(workspace: string, artifactDir: string): Settings {
 }
 
 function normalizeConsoleOutput(output: string[]): string {
-  return output.join("").replaceAll(/\s+/g, " ").trim();
+  return stripAnsi(output.join("")).replaceAll(/\s+/g, " ").trim();
+}
+
+function stripAnsi(value: string): string {
+  return value.replaceAll(/\u001b\[[0-9;]*[A-Za-z]/g, "");
 }
 
 function countOccurrences(value: string, needle: string): number {

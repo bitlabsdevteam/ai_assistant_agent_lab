@@ -47,7 +47,7 @@ describe("runtime output rendering", () => {
 
     vi.advanceTimersByTime(1);
 
-    expect(writer.lines).toEqual(["\rWorking."]);
+    expect(writer.lines).toEqual(["\rWorking\u001b[32m.\u001b[39m"]);
   });
 
   it("stops the working indicator when tool progress becomes visible", () => {
@@ -72,7 +72,7 @@ describe("runtime output rendering", () => {
     vi.advanceTimersByTime(1_000);
 
     expect(writer.lines).toEqual([
-      "\rWorking.",
+      "\rWorking\u001b[32m.\u001b[39m",
       "\r\u001b[2K",
       "Searching the web",
     ]);
@@ -100,7 +100,7 @@ describe("runtime output rendering", () => {
     });
 
     expect(writer.lines).toEqual([
-      "\rWorking.",
+      "\rWorking\u001b[32m.\u001b[39m",
       "\r\u001b[2K",
       "Hello",
     ]);
@@ -162,7 +162,7 @@ describe("runtime output rendering", () => {
     vi.advanceTimersByTime(1_000);
 
     expect(writer.lines).toEqual([
-      "\rWorking.",
+      "\rWorking\u001b[32m.\u001b[39m",
       "\r\u001b[2K",
     ]);
   });

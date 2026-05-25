@@ -23,6 +23,25 @@ export const ToolCategorySchema = z.enum([
 
 export const ChatTurnRoleSchema = z.enum(["user", "assistant", "system"]);
 export const ChatSessionStatusSchema = z.enum(["idle", "running", "awaiting_approval", "blocked"]);
+export const HeadlessRunStatusSchema = z.enum(["queued", "running", "awaiting_approval", "completed", "failed", "blocked"]);
+export const HeadlessMessageRoleSchema = z.enum(["user", "assistant", "system"]);
+export const HeadlessEventTypeSchema = z.enum([
+  "session.created",
+  "message.created",
+  "run.started",
+  "run.status_changed",
+  "agent.started",
+  "agent.completed",
+  "assistant.delta",
+  "assistant.completed",
+  "approval.required",
+  "approval.resolved",
+  "run.completed",
+  "run.failed",
+]);
+export const HeadlessApprovalStateSchema = z.enum(["none", "pending", "approved", "denied"]);
+export const HeadlessJobKindSchema = z.enum(["execute", "resume"]);
+export const HeadlessJobStatusSchema = z.enum(["queued", "leased", "completed", "failed"]);
 export const SkillScopeSchema = z.enum(["project", "user"]);
 export const SkillMatchReasonSchema = z.enum([
   "explicit_name",
@@ -391,6 +410,162 @@ export const HarnessStatusSchema = z.enum([
 
 export const ApprovalStatusSchema = z.enum(["pending", "approved", "denied", "expired"]);
 
+export const TenantRecordSchema = z.object({
+  tenantId: z.string().min(1),
+  name: z.string().min(1),
+  createdAt: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const ApiKeyRecordSchema = z.object({
+  apiKeyId: z.string().min(1),
+  tenantId: z.string().min(1),
+  label: z.string().min(1),
+  keyHash: z.string().min(1),
+  keyPrefix: z.string().min(1),
+  createdAt: z.string(),
+  lastUsedAt: z.string().optional(),
+});
+
+export const HeadlessSessionRecordSchema = z.object({
+  sessionId: z.string().min(1),
+  tenantId: z.string().min(1),
+  externalUserId: z.string().min(1),
+  workingDirectory: z.string().min(1),
+  profile: z.string().min(1),
+  mode: OperatorModeSchema.default("full-auto"),
+  model: z.string().min(1).optional(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  status: HeadlessRunStatusSchema.or(z.literal("idle")).default("idle"),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  activeRunId: z.string().min(1).optional(),
+  pendingApprovalsCount: z.number().int().nonnegative().default(0),
+});
+
+export const HeadlessMessageRecordSchema = z.object({
+  messageId: z.string().min(1),
+  tenantId: z.string().min(1),
+  sessionId: z.string().min(1),
+  role: HeadlessMessageRoleSchema,
+  content: z.string().min(1),
+  createdAt: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  runId: z.string().min(1).optional(),
+});
+
+export const HeadlessRunRecordSchema = z.object({
+  runId: z.string().min(1),
+  tenantId: z.string().min(1),
+  sessionId: z.string().min(1),
+  userMessageId: z.string().min(1),
+  assistantMessageId: z.string().min(1).optional(),
+  status: HeadlessRunStatusSchema,
+  summary: z.string().min(1).optional(),
+  evaluationStatus: z.enum(["pass", "fail", "needs_revision"]).optional(),
+  approvalState: HeadlessApprovalStateSchema.default("none"),
+  assistantReply: z.string().min(1).optional(),
+  errorMessage: z.string().min(1).optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const HeadlessApprovalRecordSchema = z.object({
+  approvalId: z.string().min(1),
+  tenantId: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1),
+  toolName: z.string().min(1),
+  reason: z.string().min(1),
+  stepId: z.string().min(1).optional(),
+  createdAt: z.string(),
+  status: ApprovalStatusSchema,
+  decisionAt: z.string().optional(),
+});
+
+export const HeadlessEventSchema = z.object({
+  eventId: z.string().min(1),
+  tenantId: z.string().min(1),
+  type: HeadlessEventTypeSchema,
+  timestamp: z.string(),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  data: z.record(z.string(), z.unknown()),
+});
+
+export const HeadlessJobSchema = z.object({
+  jobId: z.string().min(1),
+  tenantId: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1),
+  kind: HeadlessJobKindSchema,
+  status: HeadlessJobStatusSchema,
+  request: RunRequestSchema.optional(),
+  turnId: z.string().min(1).optional(),
+  attempts: z.number().int().nonnegative().default(0),
+  leaseOwner: z.string().min(1).optional(),
+  leaseExpiresAt: z.string().optional(),
+  lastHeartbeatAt: z.string().optional(),
+  errorMessage: z.string().min(1).optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const HeadlessSessionCreateInputSchema = z.object({
+  externalUserId: z.string().min(1),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  workingDirectory: z.string().min(1),
+  profile: z.string().min(1).default("default"),
+  mode: OperatorModeSchema.optional(),
+  model: z.string().min(1).optional(),
+});
+
+export const HeadlessSessionResponseSchema = z.object({
+  sessionId: z.string().min(1),
+  status: z.string().min(1),
+  createdAt: z.string(),
+});
+
+export const HeadlessSessionSummarySchema = z.object({
+  sessionId: z.string().min(1),
+  externalUserId: z.string().min(1),
+  status: z.string().min(1),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  activeRunId: z.string().min(1).optional(),
+  pendingApprovalsCount: z.number().int().nonnegative(),
+  metadata: z.record(z.string(), z.unknown()),
+});
+
+export const HeadlessMessageCreateInputSchema = z.object({
+  content: z.string().min(1),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const HeadlessMessageResponseSchema = z.object({
+  messageId: z.string().min(1),
+  runId: z.string().min(1),
+  streamUrl: z.string().min(1),
+  status: HeadlessRunStatusSchema,
+});
+
+export const HeadlessRunResponseSchema = z.object({
+  runId: z.string().min(1),
+  sessionId: z.string().min(1),
+  status: HeadlessRunStatusSchema,
+  summary: z.string().min(1).optional(),
+  evaluationStatus: z.enum(["pass", "fail", "needs_revision"]).optional(),
+  approvalState: HeadlessApprovalStateSchema,
+  assistantReply: z.string().min(1).optional(),
+  errorMessage: z.string().min(1).optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const HeadlessApprovalDecisionInputSchema = z.object({
+  decision: z.enum(["approved", "denied"]),
+});
+
 export const ApprovalRequestSchema = z.object({
   id: z.string(),
   runId: z.string(),
@@ -627,6 +802,12 @@ export type PermissionScope = z.infer<typeof PermissionScopeSchema>;
 export type ToolCategory = z.infer<typeof ToolCategorySchema>;
 export type ChatTurnRole = z.infer<typeof ChatTurnRoleSchema>;
 export type ChatSessionStatus = z.infer<typeof ChatSessionStatusSchema>;
+export type HeadlessRunStatus = z.infer<typeof HeadlessRunStatusSchema>;
+export type HeadlessMessageRole = z.infer<typeof HeadlessMessageRoleSchema>;
+export type HeadlessEventType = z.infer<typeof HeadlessEventTypeSchema>;
+export type HeadlessApprovalState = z.infer<typeof HeadlessApprovalStateSchema>;
+export type HeadlessJobKind = z.infer<typeof HeadlessJobKindSchema>;
+export type HeadlessJobStatus = z.infer<typeof HeadlessJobStatusSchema>;
 export type SkillScope = z.infer<typeof SkillScopeSchema>;
 export type SkillMatchReason = z.infer<typeof SkillMatchReasonSchema>;
 export type SkillManifest = z.infer<typeof SkillManifestSchema>;
@@ -657,6 +838,21 @@ export type ExecutorStepMemory = z.infer<typeof ExecutorStepMemorySchema>;
 export type RunBudgetState = z.infer<typeof RunBudgetStateSchema>;
 export type HarnessStatus = z.infer<typeof HarnessStatusSchema>;
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
+export type TenantRecord = z.infer<typeof TenantRecordSchema>;
+export type ApiKeyRecord = z.infer<typeof ApiKeyRecordSchema>;
+export type HeadlessSessionRecord = z.infer<typeof HeadlessSessionRecordSchema>;
+export type HeadlessMessageRecord = z.infer<typeof HeadlessMessageRecordSchema>;
+export type HeadlessRunRecord = z.infer<typeof HeadlessRunRecordSchema>;
+export type HeadlessApprovalRecord = z.infer<typeof HeadlessApprovalRecordSchema>;
+export type HeadlessEvent = z.infer<typeof HeadlessEventSchema>;
+export type HeadlessJob = z.infer<typeof HeadlessJobSchema>;
+export type HeadlessSessionCreateInput = z.infer<typeof HeadlessSessionCreateInputSchema>;
+export type HeadlessSessionResponse = z.infer<typeof HeadlessSessionResponseSchema>;
+export type HeadlessSessionSummary = z.infer<typeof HeadlessSessionSummarySchema>;
+export type HeadlessMessageCreateInput = z.infer<typeof HeadlessMessageCreateInputSchema>;
+export type HeadlessMessageResponse = z.infer<typeof HeadlessMessageResponseSchema>;
+export type HeadlessRunResponse = z.infer<typeof HeadlessRunResponseSchema>;
+export type HeadlessApprovalDecisionInput = z.infer<typeof HeadlessApprovalDecisionInputSchema>;
 export type HarnessRunState = z.infer<typeof HarnessRunStateSchema>;
 export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
 export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;

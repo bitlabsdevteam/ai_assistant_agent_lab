@@ -800,7 +800,7 @@ function buildApprovalReply(
     return [
       `I need approval to ${describeApprovalAction(approval.toolName)} before I can continue.`,
       summarizeApprovalReason(approval.reason),
-      'Type "approve" to continue, or "deny" to reject.',
+      renderBinaryApprovalPrompt(approval.toolName),
     ].join(" ");
   }
   if (pendingApprovals.length > 1) {
@@ -925,7 +925,7 @@ function renderPendingApprovals(approvals: PendingSessionApproval[]): string {
     return [
       `Approval requested: ${capitalizeSentence(describeApprovalAction(approval.toolName))}.`,
       summarizeApprovalReason(approval.reason),
-      'Type "approve" to continue, or "deny" to reject.',
+      renderBinaryApprovalPrompt(approval.toolName),
     ].join("\n");
   }
   return approvals
@@ -935,6 +935,16 @@ function renderPendingApprovals(approvals: PendingSessionApproval[]): string {
     )
     .concat('Multiple approvals are pending. Use "/approve <approvalId>" or "/deny <approvalId>".')
     .join("\n");
+}
+
+function renderBinaryApprovalPrompt(toolName: string): string {
+  if (toolName === "web.search") {
+    return "Agent is accessing the web search tool. Yes or No.";
+  }
+  if (toolName === "web.fetch") {
+    return "Agent is accessing the web. Yes or No.";
+  }
+  return `Agent is trying to ${describeApprovalAction(toolName)}. Yes or No.`;
 }
 
 async function loadPendingRunApprovals(artifactDir: string, runId: string): Promise<PendingSessionApproval[]> {
