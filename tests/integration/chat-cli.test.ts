@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 
 import { runChatCommand } from "../../src/chat/interactive.js";
+import { loadSettings } from "../../src/config.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse } from "../../src/llm/client.js";
 import { ArtifactStore } from "../../src/memory/artifact-store.js";
 import { Orchestrator } from "../../src/orchestrator.js";
@@ -914,6 +915,85 @@ describe("chat cli", () => {
     expect(output).toContain('Type "approve" to continue, or "deny" to reject.');
     expect(output).toContain("Denied approval-deny for run run-implicit-deny.");
     expect(output).not.toContain("Approval received. The pending run may proceed.");
+  });
+
+  it("renders mcp slash help and includes the new commands in /help", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-mcp-help-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings = createSettings(workspace, artifactDir);
+    const console = new FakeConsole(["/mcp", "/help", "/exit"]);
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: false,
+      },
+      {
+        console,
+        loadSettings: () => Promise.resolve(settings),
+      },
+    );
+
+    const output = console.output.join("\n");
+    expect(output).toContain("/mcp list");
+    expect(output).toContain("/mcp inspect <serverName>");
+    expect(output).toContain("/mcp add <name>");
+  });
+
+  it("parses quoted mcp add args, reloads settings, and uses the added MCP server on the next turn", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-mcp-add-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const console = new FakeConsole([
+      `/mcp add myserver --command node --arg "${path.resolve("tests/fixtures/mock-mcp-server.mjs")}" --arg "./folder with spaces" --allow-tool echo --allow-tool read`,
+      "/mcp list",
+      "Use the newly added MCP tools if available",
+      "/exit",
+    ]);
+    const seenMCPServerCounts: number[] = [];
+    let loadCount = 0;
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: false,
+      },
+      {
+        console,
+        loadSettings: async (cwd, options) => {
+          loadCount += 1;
+          return loadSettings(cwd, {
+            artifactDir,
+            outputFormat: options.outputFormat === "json" ? "json" : "text",
+            stream: typeof options.stream === "boolean" ? options.stream : false,
+          });
+        },
+        createOrchestrator: (settings) => {
+          seenMCPServerCounts.push(settings.mcpServers.length);
+          return {
+            run: () => Promise.resolve(createRunResult("run-mcp-chat", artifactDir, "completed")),
+            resume: () => Promise.reject(new Error("resume should not be called")),
+          } as never;
+        },
+      },
+    );
+
+    expect(loadCount).toBeGreaterThanOrEqual(2);
+    expect(seenMCPServerCounts).toEqual([1]);
+    const output = console.output.join("\n");
+    expect(output).toContain("Saved MCP server 'myserver' to project config.");
+    expect(output).toContain("myserver [ready]");
+
+    const config = JSON.parse(await readFile(path.join(workspace, ".little-helper.config.json"), "utf8")) as {
+      mcpServers: Array<{ args: string[]; allowedTools: string[] }>;
+    };
+    expect(config.mcpServers[0]?.args).toEqual([path.resolve("tests/fixtures/mock-mcp-server.mjs"), "./folder with spaces"]);
+    expect(config.mcpServers[0]?.allowedTools).toEqual(["echo", "read"]);
   });
 });
 

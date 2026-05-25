@@ -8,6 +8,7 @@ import { z } from "zod";
 import { AppError } from "./errors.js";
 import { loadWorkspaceEnv } from "./env.js";
 import { listResolvedLLMConfigs } from "./llm/routing.js";
+import { mergeMCPServerConfigs } from "./mcp/config-manager.js";
 import { SettingsSchema, type ApprovalMode, type OutputFormat, type Settings } from "./schemas.js";
 
 const PartialSettingsSchema = SettingsSchema.partial();
@@ -61,7 +62,7 @@ export async function loadSettings(
 ): Promise<Settings> {
   const resolvedEnv = await loadWorkspaceEnv(workingDirectory, env);
   const projectConfigPath = path.join(workingDirectory, ".little-helper.config.json");
-  const userConfigPath = path.join(homedir(), ".config", "little-helper", "config.json");
+  const userConfigPath = path.join(resolvedEnv.HOME ?? homedir(), ".config", "little-helper", "config.json");
 
   const defaults: Record<string, unknown> = {
     allowedRoots: [workingDirectory],
@@ -77,12 +78,22 @@ export async function loadSettings(
     ...(typeof overrides.stream === "boolean" ? { stream: overrides.stream } : {}),
   };
 
+  let mergedMCPServers;
+  try {
+    mergedMCPServers = mergeMCPServerConfigs(projectConfig.mcpServers, userConfig.mcpServers);
+  } catch (error) {
+    throw new AppError("CONFIG_ERROR", "Invalid MCP server settings", {
+      cause: error,
+    });
+  }
+
   const merged = {
     ...defaults,
     ...projectConfig,
     ...userConfig,
     ...envConfig,
     ...cliConfig,
+    mcpServers: mergedMCPServers,
   };
 
   const parsed = PartialSettingsSchema.safeParse(merged);

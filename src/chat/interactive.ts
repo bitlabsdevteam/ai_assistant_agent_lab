@@ -12,6 +12,16 @@ import type { RunResult } from "../harness/controller.js";
 import type { LLMStreamEvent } from "../llm/client.js";
 import { createLogger } from "../logger.js";
 import { ArtifactStore } from "../memory/artifact-store.js";
+import { tokenizeArgv } from "../commands/argv.js";
+import { addMCPServerConfig } from "../mcp/config-manager.js";
+import {
+  buildMCPServerConfig,
+  parseMCPAddArgv,
+  renderMCPAddResult,
+  renderMCPCommandHelp,
+  renderMCPDiscovery,
+  renderMCPDiscoveryList,
+} from "../mcp/commands.js";
 import { Orchestrator } from "../orchestrator.js";
 import { createLLMStreamRenderer, renderHarnessEvent } from "../rendering/runtime-output.js";
 import {
@@ -26,6 +36,7 @@ import {
   type Settings,
   type TelemetryEvent,
 } from "../schemas.js";
+import { ToolRegistry } from "../tools/registry.js";
 import { ChatSessionManager, type PendingSessionApproval } from "./session-manager.js";
 
 export interface ChatCommandOptions {
@@ -79,7 +90,7 @@ export async function runChatCommand(
   }
 
   const loadSettings = dependencies.loadSettings ?? defaultLoadSettings;
-  const baseSettings = await loadSettings(options.cwd, {
+  let baseSettings = await loadSettings(options.cwd, {
     cwd: options.cwd,
     artifactDir: options.artifactDir,
     approvalMode: options.approvalMode,
@@ -151,6 +162,15 @@ export async function runChatCommand(
             sessionManager,
             console: consoleAdapter,
             settings: baseSettings,
+            reloadSettings: async () =>
+              loadSettings(options.cwd, {
+                cwd: options.cwd,
+                artifactDir: options.artifactDir,
+                approvalMode: options.approvalMode,
+                maxIterations: options.maxIterations,
+                outputFormat: options.output,
+                stream: options.stream,
+              }),
             logger,
             createOrchestrator,
           });
@@ -159,6 +179,7 @@ export async function runChatCommand(
           }
           session = next.session;
           interactive = next.interactive;
+          baseSettings = next.settings;
           continue;
         }
 
@@ -283,6 +304,7 @@ async function handleCommand(
     sessionManager: ChatSessionManager;
     console: ChatConsole;
     settings: Settings;
+    reloadSettings: () => Promise<Settings>;
     logger: Logger;
     createOrchestrator: (
       settings: Settings,
@@ -291,8 +313,8 @@ async function handleCommand(
       onLLMEvent?: (event: LLMStreamEvent) => void,
     ) => Orchestrator;
   },
-): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState } | "exit"> {
-  const [command, ...args] = input.split(/\s+/);
+): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState; settings: Settings } | "exit"> {
+  const [command, ...args] = tokenizeArgv(input);
   emitChatEvent(dependencies.console, dependencies.settings.outputFormat, {
     type: "chat.command_invoked",
     timestamp: new Date().toISOString(),
@@ -304,22 +326,60 @@ async function handleCommand(
   switch (command) {
     case "/help":
       dependencies.console.writeLine(renderHelp());
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
     case "/status": {
       const session = await dependencies.sessionManager.refreshSession(dependencies.session.sessionId);
       const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
       dependencies.console.writeLine(renderStatus(session, interactive));
-      return { session, interactive };
+      return { session, interactive, settings: dependencies.settings };
     }
     case "/sessions": {
       const sessions = await dependencies.sessionManager.listSessions();
       dependencies.console.writeLine(sessions.length > 0 ? sessions.join("\n") : "No chat sessions yet.");
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
     }
     case "/runs": {
       const runIds = await dependencies.sessionManager.listRunIds(dependencies.session.sessionId);
       dependencies.console.writeLine(runIds.length > 0 ? runIds.join("\n") : "No runs yet.");
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+    }
+    case "/mcp": {
+      const subcommand = args[0];
+      if (!subcommand) {
+        dependencies.console.writeLine(renderMCPCommandHelp());
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "list") {
+        const registry = await ToolRegistry.create(dependencies.settings);
+        dependencies.console.writeLine(renderMCPDiscoveryList(registry.listMCPServers()));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "inspect") {
+        const serverName = args[1];
+        if (!serverName) {
+          throw new AppError("VALIDATION_ERROR", "Usage: /mcp inspect <serverName>");
+        }
+        const registry = await ToolRegistry.create(dependencies.settings);
+        dependencies.console.writeLine(renderMCPDiscovery(registry.getMCPServer(serverName)));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "add") {
+        const addInput = parseMCPAddArgv(args.slice(1));
+        const result = await addMCPServerConfig({
+          workingDirectory: dependencies.session.workingDirectory,
+          scope: addInput.scope,
+          server: buildMCPServerConfig(addInput),
+          settings: dependencies.settings,
+        });
+        const reloadedSettings = await dependencies.reloadSettings();
+        dependencies.console.writeLine(renderMCPAddResult(result));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: reloadedSettings };
+      }
+
+      throw new AppError("VALIDATION_ERROR", `Unknown MCP command: ${subcommand}. Use /mcp for help.`);
     }
     case "/resume": {
       const runId = args[0] ?? dependencies.session.activeRunId;
@@ -327,17 +387,19 @@ async function handleCommand(
         throw new AppError("VALIDATION_ERROR", "Usage: /resume <runId>");
       }
       await dependencies.sessionManager.recordSystemTurn(dependencies.session.sessionId, input, `Resume run ${runId}`);
-      return resumeRunInChat(runId, dependencies, createSyntheticTurnId("resume", runId));
+      const resumed = await resumeRunInChat(runId, dependencies, createSyntheticTurnId("resume", runId));
+      return { ...resumed, settings: dependencies.settings };
     }
     case "/approvals": {
       const approvals = await dependencies.sessionManager.listPendingApprovals(dependencies.session.sessionId);
       dependencies.console.writeLine(renderPendingApprovals(approvals));
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
     }
     case "/approve":
     case "/deny": {
       const decision = command === "/approve" ? "approved" : "denied";
-      return decideApprovalInChat(args[0], decision, dependencies, input);
+      const decided = await decideApprovalInChat(args[0], decision, dependencies, input);
+      return { ...decided, settings: dependencies.settings };
     }
     case "/diff": {
       const runId = args[0] ?? dependencies.session.activeRunId;
@@ -345,7 +407,7 @@ async function handleCommand(
         throw new AppError("VALIDATION_ERROR", "Usage: /diff <runId>");
       }
       dependencies.console.writeLine(await renderDiffSummary(dependencies.settings.artifactDir, runId));
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
     }
     case "/review": {
       const runId = args[0] ?? dependencies.session.activeRunId;
@@ -353,7 +415,7 @@ async function handleCommand(
         throw new AppError("VALIDATION_ERROR", "Usage: /review <runId>");
       }
       dependencies.console.writeLine(await renderReviewSummary(dependencies.settings.artifactDir, runId));
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
     }
     case "/artifacts": {
       const runId = args[0] ?? dependencies.session.activeRunId;
@@ -363,12 +425,12 @@ async function handleCommand(
       const artifactPath = path.join(dependencies.settings.artifactDir, runId);
       const files = await readdir(artifactPath);
       dependencies.console.writeLine(files.sort().join("\n"));
-      return { session: dependencies.session, interactive: dependencies.interactive };
+      return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
     }
     case "/model": {
       if (args.length === 0) {
         dependencies.console.writeLine(dependencies.interactive.selectedModel ?? dependencies.settings.llmModel);
-        return { session: dependencies.session, interactive: dependencies.interactive };
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
       }
       const modelArg = args[0];
       if (!modelArg) {
@@ -379,12 +441,12 @@ async function handleCommand(
         modelArg === "default" ? undefined : modelArg,
       );
       dependencies.console.writeLine(`model: ${interactive.selectedModel ?? dependencies.settings.llmModel}`);
-      return { session: dependencies.session, interactive };
+      return { session: dependencies.session, interactive, settings: dependencies.settings };
     }
     case "/mode": {
       if (args.length === 0) {
         dependencies.console.writeLine(`mode: ${dependencies.interactive.mode}`);
-        return { session: dependencies.session, interactive: dependencies.interactive };
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
       }
       const modeArg = args[0];
       if (!modeArg) {
@@ -393,7 +455,7 @@ async function handleCommand(
       const mode = parseMode(modeArg);
       const interactive = await dependencies.sessionManager.setMode(dependencies.session.sessionId, mode);
       dependencies.console.writeLine(`mode: ${interactive.mode}`);
-      return { session: dependencies.session, interactive };
+      return { session: dependencies.session, interactive, settings: dependencies.settings };
     }
     case "/context": {
       const session = await dependencies.sessionManager.refreshSession(dependencies.session.sessionId);
@@ -408,7 +470,7 @@ async function handleCommand(
           .join("\n\n"),
       );
       const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
-      return { session, interactive };
+      return { session, interactive, settings: dependencies.settings };
     }
     case "/reset": {
       const next = await dependencies.sessionManager.createSession({
@@ -425,7 +487,7 @@ async function handleCommand(
         message: `Session ${next.sessionId} ready`,
       });
       dependencies.console.writeLine(`Started new session ${next.sessionId}`);
-      return { session: next, interactive };
+      return { session: next, interactive, settings: dependencies.settings };
     }
     case "/exit":
       return "exit";
@@ -829,6 +891,10 @@ function renderHelp(): string {
     "/status",
     "/sessions",
     "/runs",
+    "/mcp",
+    "/mcp list",
+    "/mcp inspect <serverName>",
+    "/mcp add <name> [flags]",
     "/resume <runId>",
     "/approvals",
     "/approve <approvalId>",

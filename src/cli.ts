@@ -20,6 +20,8 @@ import { RunStore } from "./memory/run-store.js";
 import { PermissionPolicy } from "./policy/permissions.js";
 import { createLogger } from "./logger.js";
 import { MCPClient } from "./mcp/client.js";
+import { addMCPServerConfig } from "./mcp/config-manager.js";
+import { buildMCPServerConfig, normalizeMCPAddInput, renderMCPAddResult } from "./mcp/commands.js";
 import { Orchestrator } from "./orchestrator.js";
 import { renderApprovals } from "./rendering/approvals.js";
 import { createLLMStreamRenderer, renderHarnessEvent } from "./rendering/runtime-output.js";
@@ -58,6 +60,17 @@ interface SessionCommandOptions extends RunIdCommandOptions {
   inspect?: string;
   cancel?: string;
   reconcile?: boolean;
+}
+
+interface MCPAddCommandOptions extends BaseOptions {
+  scope?: string;
+  transport?: string;
+  command?: string;
+  arg?: string[];
+  url?: string;
+  timeoutMs?: number;
+  allowTool?: string[];
+  disabled?: boolean;
 }
 
 interface CliChatCommandOptions extends InteractiveChatCommandOptions {
@@ -395,6 +408,47 @@ const mcpCommand = new Command("mcp");
 program.addCommand(mcpCommand);
 
 mcpCommand
+  .command("add")
+  .argument("<name>", "mcp server name")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .option("--scope <scope>", "project or user", "project")
+  .option("--transport <transport>", "stdio or http", "stdio")
+  .option("--command <cmd>", "stdio server command")
+  .option("--arg <value>", "repeatable stdio server argument", collectString, [])
+  .option("--url <url>", "http server URL")
+  .option("--timeout-ms <number>", "discovery timeout in milliseconds", parseInteger, 30_000)
+  .option("--allow-tool <toolName>", "repeatable allowlist entry for discovered MCP tools", collectString, [])
+  .option("--disabled", "save the server as disabled", false)
+  .action(async (name: string, options: MCPAddCommandOptions) => {
+    const resolvedCwd = path.resolve(options.cwd);
+    const settings = await loadCliSettings(resolvedCwd, options);
+    const input = normalizeMCPAddInput({
+      name,
+      scope: asString(options.scope) ?? "project",
+      transport: asString(options.transport) ?? "stdio",
+      command: asString(options.command),
+      args: asStringArray(options.arg),
+      url: asString(options.url),
+      timeoutMs: typeof options.timeoutMs === "number" ? options.timeoutMs : 30_000,
+      allowedTools: asStringArray(options.allowTool),
+      disabled: Boolean(options.disabled),
+    });
+    const result = await addMCPServerConfig({
+      workingDirectory: resolvedCwd,
+      scope: input.scope,
+      server: buildMCPServerConfig(input),
+      settings,
+    });
+    if (settings.outputFormat === "json") {
+      render(result, settings.outputFormat);
+      return;
+    }
+    console.log(renderMCPAddResult(result));
+  });
+
+mcpCommand
   .command("list")
   .option("--cwd <path>", "working directory", process.cwd())
   .option("--artifact-dir <path>", "artifact directory override")
@@ -557,6 +611,10 @@ function parseInteger(value: string): number {
   return Number.parseInt(value, 10);
 }
 
+function collectString(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
 function render(value: unknown, outputFormat: OutputFormat): void {
   if (outputFormat === "json") {
     console.log(JSON.stringify(value, null, 2));
@@ -696,4 +754,8 @@ async function buildReviewReport(artifactStore: ArtifactStore): Promise<Record<s
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
