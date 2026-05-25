@@ -267,6 +267,8 @@ function createSettings(workspace: string, projectRoot: string, userRoot: string
       project: [projectRoot],
       user: [userRoot],
     },
+    contextCompactionThresholdPercent: 70,
+    llmContextWindows: {},
     mcpServers: [],
   };
 }

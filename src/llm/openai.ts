@@ -4,7 +4,8 @@ import { AppError } from "../errors.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse, LLMStreamCallbacks } from "./client.js";
 import { zodToJsonSchema } from "./json-schema.js";
 import { renderPromptEnvelopeForTransport } from "./prompts.js";
-import type { ResolvedLLMConfig } from "./routing.js";
+import { resolveBuiltInContextWindow, type ResolvedLLMConfig } from "./routing.js";
+import { LLMTokenCountSchema, type LLMTokenCount } from "../schemas.js";
 
 type JsonSchema = Record<string, unknown>;
 const MAX_GENERATE_ATTEMPTS = 3;
@@ -12,6 +13,23 @@ const RETRYABLE_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 504, 520, 
 
 const OpenAIResponseEnvelopeSchema = z.object({
   model: z.string().optional(),
+  usage: z
+    .object({
+      input_tokens: z.number().int().nonnegative().optional(),
+      input_tokens_details: z
+        .object({
+          cached_tokens: z.number().int().nonnegative().optional(),
+        })
+        .optional(),
+      output_tokens: z.number().int().nonnegative().optional(),
+      output_tokens_details: z
+        .object({
+          reasoning_tokens: z.number().int().nonnegative().optional(),
+        })
+        .optional(),
+      total_tokens: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
   output_text: z.string().optional(),
   output: z
     .array(
@@ -38,6 +56,32 @@ export class OpenAIResponsesClient implements LLMClient {
     this.apiKey = env.OPENAI_API_KEY;
   }
 
+  public async countTokens<T>(request: LLMGenerateRequest, schema?: z.ZodType<T>): Promise<LLMTokenCount> {
+    const promptTransport = renderPromptEnvelopeForTransport(request.prompt, request.input);
+    const extra =
+      schema === undefined
+        ? {}
+        : (() => {
+            const transportSchema = buildTransportSchema(schema, `${request.role}_response`);
+            return {
+              text: {
+                format: {
+                  type: "json_schema",
+                  name: `${request.role}_response`,
+                  schema: transportSchema.schema,
+                  strict: true,
+                },
+              },
+            };
+          })();
+    return LLMTokenCountSchema.parse({
+      provider: this.config.provider,
+      model: this.config.model,
+      inputTokens: estimateInputTokens(this.buildRequestBody(promptTransport, request.role, extra)),
+      contextWindowTokens: this.resolveContextWindowTokens(),
+    });
+  }
+
   public async generateObject<T>(
     request: LLMGenerateRequest,
     schema: z.ZodType<T>,
@@ -50,30 +94,19 @@ export class OpenAIResponsesClient implements LLMClient {
     const transportSchema = buildTransportSchema(schema, formatSchemaName);
     const shouldStream = request.stream !== undefined;
     const promptTransport = renderPromptEnvelopeForTransport(request.prompt, request.input);
-    const requestBody = JSON.stringify({
-      model: this.config.model,
-      instructions: `${promptTransport.instructions}\n\nReturn only valid JSON that matches the provided schema.`,
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: promptTransport.inputText,
-            },
-          ],
+    const requestBody = JSON.stringify(
+      this.buildRequestBody(promptTransport, request.role, {
+        text: {
+          format: {
+            type: "json_schema",
+            name: formatSchemaName,
+            schema: transportSchema.schema,
+            strict: true,
+          },
         },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: formatSchemaName,
-          schema: transportSchema.schema,
-          strict: true,
-        },
-      },
-      ...(shouldStream ? { stream: true } : {}),
-    });
+        ...(shouldStream ? { stream: true } : {}),
+      }),
+    );
 
     const response = await this.fetchWithRetry(requestBody, shouldStream);
 
@@ -92,10 +125,17 @@ export class OpenAIResponsesClient implements LLMClient {
     }
 
     const parsed = schema.parse(transportSchema.unwrap(parsedJson));
+    const usage = normalizeUsage(payload.usage, promptTransport.promptChars);
     return {
       object: parsed,
       model: payload.model ?? this.config.model,
       promptChars: promptTransport.promptChars,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens,
+      contextWindowTokens: this.resolveContextWindowTokens(),
       estimatedCostUsd: 0,
     };
   }
@@ -145,6 +185,39 @@ export class OpenAIResponsesClient implements LLMClient {
       headers["OpenAI-Project"] = this.config.project;
     }
     return headers;
+  }
+
+  private buildRequestBody(
+    promptTransport: ReturnType<typeof renderPromptEnvelopeForTransport>,
+    _role: LLMGenerateRequest["role"],
+    extra: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      model: this.config.model,
+      instructions: `${promptTransport.instructions}\n\nReturn only valid JSON that matches the provided schema.`,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: promptTransport.inputText,
+            },
+          ],
+        },
+      ],
+      ...extra,
+    };
+  }
+
+  private resolveContextWindowTokens(): number {
+    const resolved = this.config.contextWindowTokens ?? resolveBuiltInContextWindow(this.config.model);
+    if (resolved === undefined) {
+      throw new AppError("CONFIG_ERROR", `Context window is unknown for model '${this.config.model}'.`, {
+        details: { model: this.config.model, provider: this.config.provider },
+      });
+    }
+    return resolved;
   }
 
   private async fetchWithRetry(body: string, stream: boolean): Promise<Response> {
@@ -271,6 +344,50 @@ export class OpenAIResponsesClient implements LLMClient {
 
     throw new AppError("LLM_ERROR", "OpenAI streaming response ended without a completed payload or output text.");
   }
+}
+
+function normalizeUsage(
+  usage:
+    | {
+        input_tokens?: number | undefined;
+        input_tokens_details?:
+          | {
+              cached_tokens?: number | undefined;
+            }
+          | undefined;
+        output_tokens?: number | undefined;
+        output_tokens_details?:
+          | {
+              reasoning_tokens?: number | undefined;
+            }
+          | undefined;
+        total_tokens?: number | undefined;
+      }
+    | undefined,
+  promptChars: number,
+): {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+} {
+  const inputTokens = usage?.input_tokens ?? Math.max(1, Math.ceil(promptChars / 4));
+  const outputTokens = usage?.output_tokens ?? 0;
+  const totalTokens = usage?.total_tokens ?? inputTokens + outputTokens;
+  const cachedInputTokens = usage?.input_tokens_details?.cached_tokens ?? 0;
+  const reasoningOutputTokens = usage?.output_tokens_details?.reasoning_tokens ?? 0;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedInputTokens,
+    reasoningOutputTokens,
+  };
+}
+
+function estimateInputTokens(body: Record<string, unknown>): number {
+  return Math.max(1, Math.ceil(JSON.stringify(body).length / 4));
 }
 
 function buildTransportSchema<T>(

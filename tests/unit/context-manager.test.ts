@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ContextManager } from "../../src/context/manager.js";
+import { ContextManager, renderSnapshot } from "../../src/context/manager.js";
 import { ArtifactStore } from "../../src/memory/artifact-store.js";
 
 describe("ContextManager", () => {
@@ -74,7 +74,6 @@ describe("ContextManager", () => {
         },
       ],
       approvals: [],
-      maxChars: 1_200,
     });
 
     expect(snapshot.agent).toBe("executor");
@@ -119,11 +118,14 @@ describe("ContextManager", () => {
         rationaleSummary: "y".repeat(100),
         resultSummary: "z".repeat(100),
       })),
-      maxChars: 300,
     });
+    const compacted = renderSnapshot(snapshot, "compact");
+    const aggressive = renderSnapshot(snapshot, "aggressive");
 
-    expect(snapshot.compacted).toBe(true);
-    expect(snapshot.summary).toContain("[...compacted...]");
-    expect(snapshot.promptChars).toBeLessThanOrEqual(350);
+    expect(snapshot.compacted).toBe(false);
+    expect(compacted.compacted).toBe(true);
+    expect(compacted.promptChars).toBeLessThan(snapshot.promptChars);
+    expect(aggressive.promptChars).toBeLessThan(compacted.promptChars);
+    expect(compacted.summary).toContain("Recent step trace");
   });
 });

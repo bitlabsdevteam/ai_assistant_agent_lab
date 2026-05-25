@@ -4,6 +4,14 @@
 
 `little-helper` is a CLI-first multi-agent runtime with separate analyzer, executor, and evaluator agents, durable run artifacts, policy-gated tool execution, and resumable harness state.
 
+## Customer Readiness
+
+Customers can use `little-helper` today if they are comfortable self-hosting a Node.js CLI or service and supplying OpenAI credentials. The most production-ready entry point is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding.
+
+One important constraint: there is no first-class `little-helper serve` command yet. API deployment is possible, but it currently requires a small custom Node host that wraps the exported runtime objects.
+
+For the full customer-engineer path, see [docs/customer-install-and-integration.md](docs/customer-install-and-integration.md).
+
 ## Requirements
 
 - Node.js 22+

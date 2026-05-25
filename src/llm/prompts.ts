@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 
+import { snapshotToPromptSections } from "../context/manager.js";
 import { AppError } from "../errors.js";
 import type {
   AnalysisResult,
   AgentContextSnapshot,
+  ContextCompactionMode,
   ConfidentialArtifactPolicy,
   ExecutorStepMemory,
   PlanStep,
@@ -65,6 +67,7 @@ export function buildAnalyzerPromptEnvelope(
   availableTools: Array<{ name: string; description: string; sideEffecting: boolean; category: string }>,
   contextSnapshot: AgentContextSnapshot | undefined,
   runtimePolicy: PromptRuntimePolicyInput,
+  contextCompactionMode: ContextCompactionMode = "full",
 ): PromptEnvelope {
   const visibleAppendText = renderSelectedSkills(request, { includeBody: true });
   const contextPayload = createContextPayload(
@@ -72,10 +75,8 @@ export function buildAnalyzerPromptEnvelope(
       createSection("User task", "trusted", request.task),
       createSection("Tool catalog", "trusted", renderToolCatalog(availableTools)),
       createSection("Chat context", "trusted", renderChatContext(request)),
-      createSection(
-        "Persisted run context",
-        "untrusted_context",
-        contextSnapshot?.summary ?? "No prior context snapshot available.",
+      ...snapshotToPromptSections(contextSnapshot, contextCompactionMode).map((section) =>
+        createSection(section.label, section.trustLevel, section.text),
       ),
     ],
     contextSnapshot,
@@ -91,6 +92,7 @@ export function buildExecutorPromptEnvelope(
   observation: string | undefined,
   stepMemory: ExecutorStepMemory | undefined,
   runtimePolicy: PromptRuntimePolicyInput,
+  contextCompactionMode: ContextCompactionMode = "full",
 ): PromptEnvelope {
   const visibleAppendText = renderSelectedSkills(request, { includeBody: true });
   const contextPayload = createContextPayload(
@@ -112,10 +114,8 @@ export function buildExecutorPromptEnvelope(
         "untrusted_context",
         stepMemory ? JSON.stringify(stepMemory, null, 2) : "No step memory recorded yet.",
       ),
-      createSection(
-        "Persisted run context",
-        "untrusted_context",
-        contextSnapshot?.summary ?? "No prior context snapshot available.",
+      ...snapshotToPromptSections(contextSnapshot, contextCompactionMode).map((section) =>
+        createSection(section.label, section.trustLevel, section.text),
       ),
     ],
     contextSnapshot,
@@ -129,6 +129,7 @@ export function buildEvaluatorPromptEnvelope(
   execution: { summary: string; blockers: string[]; changedFiles: string[]; completedSteps: string[] },
   contextSnapshot: AgentContextSnapshot | undefined,
   runtimePolicy: PromptRuntimePolicyInput,
+  contextCompactionMode: ContextCompactionMode = "full",
 ): PromptEnvelope {
   const visibleAppendText = renderSelectedSkills(request, {
     includeBody: shouldIncludeSkillBodyForEvaluator(request),
@@ -153,10 +154,8 @@ export function buildEvaluatorPromptEnvelope(
           `Blockers: ${execution.blockers.join("; ") || "none"}`,
         ].join("\n"),
       ),
-      createSection(
-        "Persisted run context",
-        "untrusted_context",
-        contextSnapshot?.summary ?? "No prior context snapshot available.",
+      ...snapshotToPromptSections(contextSnapshot, contextCompactionMode).map((section) =>
+        createSection(section.label, section.trustLevel, section.text),
       ),
     ],
     contextSnapshot,

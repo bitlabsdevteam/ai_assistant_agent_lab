@@ -1,5 +1,10 @@
 import type { LLMStreamEvent } from "../llm/client.js";
-import type { OutputFormat, TelemetryEvent } from "../schemas.js";
+import {
+  LLMUsageTelemetryDetailsSchema,
+  type LLMUsageTelemetryDetails,
+  type OutputFormat,
+  type TelemetryEvent,
+} from "../schemas.js";
 
 export interface TextOutputWriter {
   write(text: string): void;
@@ -11,6 +16,12 @@ type TextLLMRenderingMode = "internal" | "assistant";
 
 interface WorkingIndicatorController {
   noteActivity(): void;
+  noteVisibleOutput(): void;
+  finish(): void;
+}
+
+interface UsageLineController {
+  handleEvent(event: TelemetryEvent): boolean;
   noteVisibleOutput(): void;
   finish(): void;
 }
@@ -185,13 +196,16 @@ export function createRuntimeTextRenderer(
   finish: () => void;
 } {
   const workingIndicator = createWorkingIndicatorController(writer, outputFormat, options.workingIndicator);
+  const usageLine = createUsageLineController(writer, outputFormat);
   const visibleWriter: TextOutputWriter = {
     write: (text) => {
       workingIndicator.noteVisibleOutput();
+      usageLine.noteVisibleOutput();
       writer.write(text);
     },
     writeLine: (line) => {
       workingIndicator.noteVisibleOutput();
+      usageLine.noteVisibleOutput();
       writer.writeLine(line);
     },
     ...(writer.isTTY ? { isTTY: () => writer.isTTY?.() ?? false } : {}),
@@ -203,6 +217,12 @@ export function createRuntimeTextRenderer(
   return {
     onEvent: (event) => {
       workingIndicator.noteActivity();
+      if (event.event === "llm.usage.updated") {
+        workingIndicator.noteVisibleOutput();
+      }
+      if (usageLine.handleEvent(event)) {
+        return;
+      }
       renderHarnessEvent(visibleWriter, outputFormat, event);
     },
     onLLMEvent: (event) => {
@@ -214,6 +234,7 @@ export function createRuntimeTextRenderer(
     writeLine: visibleWriter.writeLine,
     finish: () => {
       llmRenderer.finish();
+      usageLine.finish();
       workingIndicator.finish();
     },
   };
@@ -229,6 +250,7 @@ export function renderHarnessEvent(writer: TextOutputWriter, outputFormat: Outpu
     event.event === "harness.run_started" ||
     event.event === "harness.resumed" ||
     event.event === "harness.awaiting_approval" ||
+    event.event === "llm.usage.updated" ||
     event.event === "evaluation.passed" ||
     event.event === "run.completed"
   ) {
@@ -265,6 +287,98 @@ export function renderHarnessEvent(writer: TextOutputWriter, outputFormat: Outpu
   }
   const label = event.event.replaceAll(".", " ");
   writer.writeLine(`${label} (${event.status})`);
+}
+
+function createUsageLineController(writer: TextOutputWriter, outputFormat: OutputFormat): UsageLineController {
+  const interactiveTTY = outputFormat === "text" && (writer.isTTY?.() ?? false);
+  let lineVisible = false;
+  let lastMaterialPercent: number | undefined;
+  let lastModelKey: string | undefined;
+  let lastCompactionCount = 0;
+
+  function clearLine(): void {
+    if (!interactiveTTY || !lineVisible) {
+      return;
+    }
+    writer.write("\r\u001b[2K");
+    lineVisible = false;
+  }
+
+  return {
+    handleEvent: (event) => {
+      if (event.event !== "llm.usage.updated") {
+        return false;
+      }
+      const parsed = LLMUsageTelemetryDetailsSchema.safeParse(event.details);
+      if (!parsed.success) {
+        return false;
+      }
+      const details = parsed.data;
+      const percent = Math.round(details.usagePercent);
+      const line = formatUsageLine(details);
+
+      if (outputFormat === "json") {
+        return false;
+      }
+
+      if (interactiveTTY) {
+        writer.write(`\r${line}`);
+        lineVisible = true;
+        lastMaterialPercent = percent;
+        lastModelKey = `${details.phase}:${details.model}`;
+        lastCompactionCount = details.compactionCount;
+        return true;
+      }
+
+      const modelKey = `${details.phase}:${details.model}`;
+      const materialChange =
+        lastModelKey !== modelKey ||
+        lastMaterialPercent === undefined ||
+        Math.abs(percent - lastMaterialPercent) >= 5 ||
+        details.compactionCount !== lastCompactionCount ||
+        details.stage === "compaction";
+      if (materialChange) {
+        writer.writeLine(line);
+        lastMaterialPercent = percent;
+        lastModelKey = modelKey;
+        lastCompactionCount = details.compactionCount;
+      }
+      return true;
+    },
+    noteVisibleOutput: () => {
+      clearLine();
+    },
+    finish: () => {
+      clearLine();
+    },
+  };
+}
+
+function formatUsageLine(details: LLMUsageTelemetryDetails): string {
+  if (details.stage === "response") {
+    const fragments = [`Token usage: total=${formatTokenCount(details.totalTokens)}`, `input=${formatTokenCount(details.inputTokens)}`];
+    if (details.cachedInputTokens > 0) {
+      fragments.push(`(+ ${formatTokenCount(details.cachedInputTokens)} cached)`);
+    }
+    fragments.push(`output=${formatTokenCount(details.outputTokens)}`);
+    if (details.reasoningOutputTokens > 0) {
+      fragments.push(`(reasoning ${formatTokenCount(details.reasoningOutputTokens)})`);
+    }
+    return fragments.join(" ");
+  }
+  return `Context usage: ${Math.round(details.usagePercent)}% (${formatTokenCount(details.inputTokens)} / ${formatTokenCount(
+    details.contextWindowTokens,
+  )} tokens) · ${details.phase}:${details.model}`;
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${Math.round(value / 100_000) / 10}m`;
+  }
+  if (value >= 1_000) {
+    return `${Math.round(value / 100) / 10}k`;
+  }
+  return `${value}`;
 }
 
 function summarizeStream(
@@ -579,14 +693,12 @@ function createWorkingIndicatorController(
   }
 
   const green = "\u001b[32m";
+  const dim = "\u001b[2m";
   const reset = "\u001b[39m";
+  const resetAll = "\u001b[22m";
   const delayMs = options.delayMs ?? 200;
   const frameIntervalMs = options.frameIntervalMs ?? 350;
-  const frames = [
-    `Working${green}.${reset}`,
-    `Working${green}..${reset}`,
-    `Working${green}...${reset}`,
-  ] as const;
+  const frames = buildWorkingIndicatorFrames({ green, dim, reset, resetAll });
   const interactiveTTY = writer.isTTY?.() ?? false;
   let activationTimer: ReturnType<typeof setTimeout> | undefined;
   let frameTimer: ReturnType<typeof setInterval> | undefined;
@@ -669,4 +781,22 @@ function createNoopWorkingIndicatorController(): WorkingIndicatorController {
     noteVisibleOutput: () => {},
     finish: () => {},
   };
+}
+
+function buildWorkingIndicatorFrames(colors: {
+  green: string;
+  dim: string;
+  reset: string;
+  resetAll: string;
+}): string[] {
+  const label = "Working...";
+  return [...label].map((_, highlightIndex) =>
+    [...label]
+      .map((character, characterIndex) =>
+        characterIndex === highlightIndex
+          ? `${colors.green}${character}${colors.reset}`
+          : `${colors.dim}${character}${colors.resetAll}`,
+      )
+      .join(""),
+  );
 }

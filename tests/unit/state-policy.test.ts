@@ -26,6 +26,8 @@ const settings: Settings = {
     project: ["/workspace/.little-helper/skills"],
     user: ["/tmp/little-helper-user-skills"],
   },
+  contextCompactionThresholdPercent: 70,
+  llmContextWindows: {},
   mcpServers: [],
 };
 

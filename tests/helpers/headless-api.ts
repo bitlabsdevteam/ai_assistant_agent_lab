@@ -43,6 +43,8 @@ export async function createHeadlessTestHarness(options: {
       project: [path.join(workspace, ".little-helper", "skills")],
       user: [path.join(workspace, ".user-skills")],
     },
+    contextCompactionThresholdPercent: 70,
+    llmContextWindows: {},
     mcpServers: [],
   };
   const repositories = new InMemoryRepositoryBundle();

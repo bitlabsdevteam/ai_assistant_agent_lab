@@ -19,6 +19,7 @@ import { RecoveryManager } from "./recovery.js";
 import { Scheduler } from "./scheduler.js";
 import { transitionRunState } from "./state-machine.js";
 import type { LLMClient, LLMStreamEvent } from "../llm/client.js";
+import { TokenUsageTracker } from "../llm/usage-tracker.js";
 import type { RunStore } from "../memory/run-store.js";
 import type { PermissionPolicy } from "../policy/permissions.js";
 import type { MetricsCollector } from "../telemetry/metrics.js";
@@ -422,6 +423,12 @@ export class HarnessController {
     budget: AgentRuntimeContext["budget"],
     stepTrace: AgentRuntimeContext["stepTrace"],
   ): AgentRuntimeContext {
+    const usageTracker = new TokenUsageTracker(
+      this.dependencies.artifactStore,
+      this.dependencies.artifactStore.runId,
+      budget,
+      this.dependencies.onEvent,
+    );
     return {
       runId: this.dependencies.artifactStore.runId,
       workingDirectory: request.workingDirectory,
@@ -437,6 +444,7 @@ export class HarnessController {
       artifactStore: this.dependencies.artifactStore,
       logger: this.dependencies.logger,
       budget,
+      usageTracker,
       stepTrace,
       runRequest: request,
       ...(this.dependencies.onLLMEvent ? { onLLMEvent: this.dependencies.onLLMEvent } : {}),
@@ -534,7 +542,6 @@ export class HarnessController {
       ...(evidence.evaluation ? { evaluation: evidence.evaluation } : {}),
       approvals: this.approvals.snapshot(),
       stepTrace: runtime.stepTrace,
-      maxChars: Math.min(runtime.budget.maxPromptChars ?? 6_000, 6_000),
     });
     return {
       ...runtime,

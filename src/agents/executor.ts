@@ -10,6 +10,7 @@ import {
 } from "../llm/prompts.js";
 import { AppError } from "../errors.js";
 import { buildApprovalRequest } from "../policy/permissions.js";
+import { preparePromptWithTokenBudget } from "./llm-preflight.js";
 import type {
   AnalysisResult,
   ExecutionReport,
@@ -405,39 +406,49 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     observation: string,
     stepMemory: ExecutorStepMemory,
   ): Promise<ExecutorAction> {
-    const prompt = buildExecutorPromptEnvelope(
-      context.runRequest ?? {
-        task: analysis.objective,
-        workingDirectory: context.workingDirectory,
-        profile: "default",
-        dryRun: context.dryRun,
-        maxIterations: context.budget.maxIterations,
-        selectedSkills: [],
-        metadata: {},
-      },
+    const llmInput = {
       analysis,
       step,
-      context.contextSnapshot,
       observation,
       stepMemory,
-      {
-        dryRun: context.dryRun,
-        permissions: context.permissions,
-        approvalMode: context.settings.approvalMode,
-        ...(context.operatorMode ? { operatorMode: context.operatorMode } : {}),
-      },
-    );
+      operatorMode: context.operatorMode ?? "full-auto",
+    };
+    const promptPreparation = await preparePromptWithTokenBudget({
+      role: "executor",
+      llmInput,
+      schema: ExecutorActionSchema,
+      context,
+      buildPrompt: (compactionMode) =>
+        buildExecutorPromptEnvelope(
+          context.runRequest ?? {
+            task: analysis.objective,
+            workingDirectory: context.workingDirectory,
+            profile: "default",
+            dryRun: context.dryRun,
+            maxIterations: context.budget.maxIterations,
+            selectedSkills: [],
+            metadata: {},
+          },
+          analysis,
+          step,
+          context.contextSnapshot,
+          observation,
+          stepMemory,
+          {
+            dryRun: context.dryRun,
+            permissions: context.permissions,
+            approvalMode: context.settings.approvalMode,
+            ...(context.operatorMode ? { operatorMode: context.operatorMode } : {}),
+          },
+          compactionMode,
+        ),
+    });
+    const prompt = promptPreparation.prompt;
     await context.artifactStore.writeJson(
       `prompt-envelope-executor-${step.id}.json`,
       {
         envelope: prompt,
-        transport: renderPromptEnvelopeForTransport(prompt, {
-          analysis,
-          step,
-          observation,
-          stepMemory,
-          operatorMode: context.operatorMode ?? "full-auto",
-        }),
+        transport: renderPromptEnvelopeForTransport(prompt, llmInput),
       },
       {
         confidentiality: "metadata_only",
@@ -448,13 +459,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
       {
         role: "executor",
         prompt,
-        input: {
-          analysis,
-          step,
-          observation,
-          stepMemory,
-          operatorMode: context.operatorMode ?? "full-auto",
-        },
+        input: llmInput,
         ...(context.onLLMEvent
           ? {
               stream: {
@@ -481,6 +486,20 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
       },
       ExecutorActionSchema,
     );
+    await context.usageTracker.record({
+      phase: "executor",
+      provider: promptPreparation.count.provider,
+      model: response.model,
+      contextWindowTokens: response.contextWindowTokens ?? promptPreparation.count.contextWindowTokens,
+      inputTokens: response.inputTokens,
+      outputTokens: response.outputTokens,
+      totalTokens: response.totalTokens,
+      cachedInputTokens: response.cachedInputTokens,
+      reasoningOutputTokens: response.reasoningOutputTokens,
+      promptChars: response.promptChars,
+      stage: "response",
+      compactionMode: promptPreparation.compactionMode,
+    });
     context.budget.promptCharsUsed += response.promptChars;
     context.budget.estimatedCostUsd += response.estimatedCostUsd;
     return ExecutorActionSchema.parse(response.object);

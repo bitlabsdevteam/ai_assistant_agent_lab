@@ -2,7 +2,14 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { ArtifactStore } from "../memory/artifact-store.js";
-import type { AnalysisResult, EvaluationResult, ExecutionReport, HarnessRunState, RunRequest } from "../schemas.js";
+import type {
+  AnalysisResult,
+  EvaluationResult,
+  ExecutionReport,
+  HarnessRunState,
+  RunRequest,
+  TokenUsageSnapshot,
+} from "../schemas.js";
 
 export class Finalizer {
   public constructor(private readonly artifactStore: ArtifactStore) {}
@@ -16,6 +23,7 @@ export class Finalizer {
   }): Promise<string> {
     await this.writeCombinedDiffArtifact();
     const promptMetadata = await this.readPromptEnvelopeArtifacts();
+    const tokenUsage = await this.readTokenUsage();
     const report = [
       `# Run ${input.state.runId}`,
       "",
@@ -38,6 +46,26 @@ export class Finalizer {
       "## Prompt Attestation",
       "",
       promptMetadata.length > 0 ? JSON.stringify(promptMetadata, null, 2) : "Not available.",
+      "",
+      "## Token Usage",
+      "",
+      tokenUsage
+        ? JSON.stringify(
+            {
+              latest: {
+                phase: tokenUsage.phase,
+                model: tokenUsage.model,
+                usagePercent: tokenUsage.usagePercent,
+                inputTokens: tokenUsage.inputTokens,
+                contextWindowTokens: tokenUsage.contextWindowTokens,
+              },
+              peakUsagePercent: tokenUsage.peakUsagePercent,
+              compactionCount: tokenUsage.compactionCount,
+            },
+            null,
+            2,
+          )
+        : "Not available.",
       "",
       "## Execution",
       "",
@@ -75,5 +103,14 @@ export class Finalizer {
       values.push(JSON.parse(raw));
     }
     return values;
+  }
+
+  private async readTokenUsage(): Promise<TokenUsageSnapshot | undefined> {
+    try {
+      const raw = await readFile(path.join(this.artifactStore.runDirectory, "token-usage.json"), "utf8");
+      return JSON.parse(raw) as TokenUsageSnapshot;
+    } catch {
+      return undefined;
+    }
   }
 }

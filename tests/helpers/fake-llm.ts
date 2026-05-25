@@ -4,9 +4,20 @@ import type { AnalysisResult, EvaluationResult, ExecutionReport, ExecutorAction,
 import { AnalysisResultSchema, EvaluationResultSchema, ExecutorActionSchema } from "../../src/schemas.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse } from "../../src/llm/client.js";
 import { renderPromptEnvelopeForTransport } from "../../src/llm/prompts.js";
+import { LLMTokenCountSchema, type LLMTokenCount } from "../../src/schemas.js";
 
 export class DeterministicTestLLMClient implements LLMClient {
   public constructor(private readonly model = "gpt-5.4-test") {}
+
+  public async countTokens<T>(request: LLMGenerateRequest, _schema?: z.ZodType<T>): Promise<LLMTokenCount> {
+    const transport = renderPromptEnvelopeForTransport(request.prompt, request.input);
+    return LLMTokenCountSchema.parse({
+      provider: "openai",
+      model: this.model,
+      inputTokens: Math.max(1, Math.ceil(transport.promptChars / 4)),
+      contextWindowTokens: 128_000,
+    });
+  }
 
   public async generateObject<T>(request: LLMGenerateRequest, schema: z.ZodType<T>): Promise<LLMGenerateResponse<T>> {
     let object: unknown;
@@ -53,6 +64,12 @@ export class DeterministicTestLLMClient implements LLMClient {
       object: parsed,
       model: this.model,
       promptChars: renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars,
+      inputTokens: Math.max(1, Math.ceil(renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars / 4)),
+      outputTokens: Math.max(1, Math.ceil(rendered.length / 4)),
+      totalTokens:
+        Math.max(1, Math.ceil(renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars / 4)) +
+        Math.max(1, Math.ceil(rendered.length / 4)),
+      contextWindowTokens: 128_000,
       estimatedCostUsd: 0,
     };
   }

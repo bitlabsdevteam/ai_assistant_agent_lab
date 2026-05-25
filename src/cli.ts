@@ -11,6 +11,7 @@ import { applyWorkspaceEnvToProcess } from "./env.js";
 import { AppError } from "./errors.js";
 import type { LLMStreamEvent } from "./llm/client.js";
 import { createLLMClient } from "./llm/providers.js";
+import { TokenUsageTracker } from "./llm/usage-tracker.js";
 import { AnalyzerAgent } from "./agents/analyzer.js";
 import { runChatCommand, type ChatCommandOptions as InteractiveChatCommandOptions } from "./chat/interactive.js";
 import { ApprovalManager } from "./harness/approvals.js";
@@ -190,6 +191,9 @@ program
   .action(async (task: string, options: PlanCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, { ...options, stream: false });
     const llmStreamRenderer = createCLIStreamRenderer(settings.outputFormat);
+    const artifactStore = new ArtifactStore(settings.artifactDir, "plan-preview");
+    const budget = RunBudgetStateSchema.parse({ maxIterations: 1 });
+    await artifactStore.init();
     const request = RunRequestSchema.parse({
       task,
       workingDirectory: path.resolve(options.cwd),
@@ -207,11 +211,12 @@ program
       llm: createLLMClient(settings),
       tools: await ToolRegistry.create(settings),
       policy: new PermissionPolicy(settings),
-      approvalManager: new ApprovalManager(new ArtifactStore(settings.artifactDir, "plan-preview")),
+      approvalManager: new ApprovalManager(artifactStore),
       approvals: [],
-      artifactStore: new ArtifactStore(settings.artifactDir, "plan-preview"),
+      artifactStore,
       logger: createLogger(settings),
-      budget: RunBudgetStateSchema.parse({ maxIterations: 1 }),
+      budget,
+      usageTracker: new TokenUsageTracker(artifactStore, "plan-preview", budget),
       stepTrace: [],
       ...(settings.stream ? { onLLMEvent: llmStreamRenderer.onLLMEvent } : {}),
       signal: AbortSignal.timeout(30_000),
@@ -242,8 +247,15 @@ program
   .option("--output <format>", "text or json", "text")
   .action(async (runId: string, options: RunIdCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, options);
-    const state = await new RunStore(settings.artifactDir).createArtifactStore(runId).readJson("harness-state.json");
-    render(state, settings.outputFormat);
+    const artifactStore = new RunStore(settings.artifactDir).createArtifactStore(runId);
+    const state = await artifactStore.readJson("harness-state.json");
+    render(
+      {
+        state,
+        tokenUsage: await safeReadJson(artifactStore, "token-usage.json", null),
+      },
+      settings.outputFormat,
+    );
   });
 
 program
@@ -852,6 +864,7 @@ async function buildReviewReport(artifactStore: ArtifactStore): Promise<Record<s
   return {
     state: await safeReadJson<Record<string, unknown>>(artifactStore, "harness-state.json", {}),
     evaluation: await safeReadJson<Record<string, unknown>>(artifactStore, "evaluation.json", {}),
+    tokenUsage: await safeReadJson<Record<string, unknown> | null>(artifactStore, "token-usage.json", null),
     finalReport,
   };
 }

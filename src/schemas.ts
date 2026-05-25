@@ -20,6 +20,8 @@ export const ToolCategorySchema = z.enum([
   "mcp",
   "validation",
 ]);
+export const ContextCompactionModeSchema = z.enum(["full", "compact", "aggressive"]);
+export const LLMUsageStageSchema = z.enum(["preflight", "compaction", "response"]);
 
 export const ChatTurnRoleSchema = z.enum(["user", "assistant", "system"]);
 export const ChatSessionStatusSchema = z.enum(["idle", "running", "awaiting_approval", "blocked"]);
@@ -371,6 +373,7 @@ export const InteractiveSessionStateSchema = z.object({
   activeRunId: z.string().min(1).optional(),
   pendingPatchArtifact: z.string().min(1).optional(),
   recentActivitySummary: z.string().default(""),
+  latestTokenUsageLine: z.string().min(1).optional(),
 });
 
 export const ExecutorStepMemorySchema = z.object({
@@ -388,9 +391,18 @@ export const RunBudgetStateSchema = z.object({
   maxIterations: z.number().int().positive(),
   maxToolCalls: z.number().int().positive().optional(),
   maxPromptChars: z.number().int().positive().optional(),
+  maxPromptTokens: z.number().int().positive().optional(),
   maxCostUsd: z.number().nonnegative().optional(),
   toolCallsUsed: z.number().int().nonnegative().default(0),
   promptCharsUsed: z.number().int().nonnegative().default(0),
+  promptTokensUsed: z.number().int().nonnegative().default(0),
+  lastInputTokens: z.number().int().nonnegative().default(0),
+  lastOutputTokens: z.number().int().nonnegative().default(0),
+  lastTotalTokens: z.number().int().nonnegative().default(0),
+  lastUsagePercent: z.number().nonnegative().default(0),
+  peakUsagePercent: z.number().nonnegative().default(0),
+  activeModel: z.string().min(1).optional(),
+  compactionCount: z.number().int().nonnegative().default(0),
   estimatedCostUsd: z.number().nonnegative().default(0),
 });
 
@@ -658,11 +670,23 @@ export const ContextSourceSchema = z.object({
   trustLevel: ContextTrustLevelSchema.default("trusted"),
 });
 
+export const AgentContextSectionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+  trustLevel: ContextTrustLevelSchema,
+  fullText: z.string(),
+  compactText: z.string(),
+  aggressiveText: z.string(),
+  priority: z.number().int().nonnegative().default(0),
+});
+
 export const AgentContextSnapshotSchema = z.object({
   agent: z.enum(["analyzer", "executor", "evaluator"]),
   summary: z.string(),
   promptChars: z.number().int().nonnegative(),
   compacted: z.boolean(),
+  compactionMode: ContextCompactionModeSchema.default("full"),
+  sections: z.array(AgentContextSectionSchema).default([]),
   sources: z.array(ContextSourceSchema),
 });
 
@@ -740,6 +764,51 @@ export const ToolDescriptorSchema = z.object({
   permissionScope: PermissionScopeSchema,
 });
 
+export const LLMTokenCountSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  inputTokens: z.number().int().nonnegative(),
+  contextWindowTokens: z.number().int().positive(),
+});
+
+export const TokenUsageSnapshotSchema = z.object({
+  runId: z.string().min(1),
+  phase: z.enum(["analyzer", "executor", "evaluator"]),
+  model: z.string().min(1),
+  provider: z.string().min(1),
+  contextWindowTokens: z.number().int().positive(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative().default(0),
+  reasoningOutputTokens: z.number().int().nonnegative().default(0),
+  usagePercent: z.number().nonnegative(),
+  peakUsagePercent: z.number().nonnegative(),
+  maxPromptTokens: z.number().int().positive().optional(),
+  promptChars: z.number().int().nonnegative().default(0),
+  compactionCount: z.number().int().nonnegative().default(0),
+  compactionMode: ContextCompactionModeSchema.default("full"),
+  stage: LLMUsageStageSchema,
+  timestamp: z.string(),
+});
+
+export const LLMUsageTelemetryDetailsSchema = z.object({
+  phase: z.enum(["analyzer", "executor", "evaluator"]),
+  model: z.string().min(1),
+  provider: z.string().min(1),
+  contextWindowTokens: z.number().int().positive(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative().default(0),
+  reasoningOutputTokens: z.number().int().nonnegative().default(0),
+  usagePercent: z.number().nonnegative(),
+  peakUsagePercent: z.number().nonnegative(),
+  compactionCount: z.number().int().nonnegative(),
+  compactionMode: ContextCompactionModeSchema,
+  stage: LLMUsageStageSchema,
+});
+
 export const LLMRoleOverrideSchema = z.object({
   provider: z.literal("openai").optional(),
   model: z.string().min(1).optional(),
@@ -764,6 +833,8 @@ export const SettingsSchema = z.object({
       evaluator: LLMRoleOverrideSchema.optional(),
     })
     .default({}),
+  contextCompactionThresholdPercent: z.number().positive().max(100).default(70),
+  llmContextWindows: z.record(z.string(), z.number().int().positive()).default({}),
   maxIterations: z.number().int().positive().default(3),
   approvalMode: ApprovalModeSchema.default("on-risk"),
   outputFormat: OutputFormatSchema.default("text"),
@@ -800,6 +871,8 @@ export type OutputFormat = z.infer<typeof OutputFormatSchema>;
 export type OperatorMode = z.infer<typeof OperatorModeSchema>;
 export type PermissionScope = z.infer<typeof PermissionScopeSchema>;
 export type ToolCategory = z.infer<typeof ToolCategorySchema>;
+export type ContextCompactionMode = z.infer<typeof ContextCompactionModeSchema>;
+export type LLMUsageStage = z.infer<typeof LLMUsageStageSchema>;
 export type ChatTurnRole = z.infer<typeof ChatTurnRoleSchema>;
 export type ChatSessionStatus = z.infer<typeof ChatSessionStatusSchema>;
 export type HeadlessRunStatus = z.infer<typeof HeadlessRunStatusSchema>;
@@ -859,6 +932,7 @@ export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;
 export type MetricRecord = z.infer<typeof MetricRecordSchema>;
 export type ContextTrustLevel = z.infer<typeof ContextTrustLevelSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
+export type AgentContextSection = z.infer<typeof AgentContextSectionSchema>;
 export type AgentContextSnapshot = z.infer<typeof AgentContextSnapshotSchema>;
 export type ProtectedPromptScope = z.infer<typeof ProtectedPromptScopeSchema>;
 export type ProtectedPromptRef = z.infer<typeof ProtectedPromptRefSchema>;
@@ -870,5 +944,8 @@ export type ConfidentialArtifactPolicy = z.infer<typeof ConfidentialArtifactPoli
 export type ChatEventType = z.infer<typeof ChatEventTypeSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
+export type LLMTokenCount = z.infer<typeof LLMTokenCountSchema>;
+export type TokenUsageSnapshot = z.infer<typeof TokenUsageSnapshotSchema>;
+export type LLMUsageTelemetryDetails = z.infer<typeof LLMUsageTelemetryDetailsSchema>;
 export type LLMRoleOverride = z.infer<typeof LLMRoleOverrideSchema>;
 export type Settings = z.infer<typeof SettingsSchema>;

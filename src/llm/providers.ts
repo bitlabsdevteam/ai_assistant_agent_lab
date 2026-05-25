@@ -5,6 +5,7 @@ import type { Settings } from "../schemas.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse } from "./client.js";
 import { OpenAIResponsesClient } from "./openai.js";
 import { listResolvedLLMConfigs, resolveLLMConfigForRole, type ResolvedLLMConfig } from "./routing.js";
+import type { LLMTokenCount } from "../schemas.js";
 
 export class UnsupportedLLMClient implements LLMClient {
   public constructor(private readonly provider: string, private readonly model: string) {}
@@ -12,6 +13,15 @@ export class UnsupportedLLMClient implements LLMClient {
   public generateObject<T>(request: LLMGenerateRequest, schema: z.ZodType<T>): Promise<LLMGenerateResponse<T>> {
     void request;
     void schema;
+    return Promise.reject(
+      new AppError(
+        "LLM_ERROR",
+        `Provider '${this.provider}' is configured but no adapter is implemented yet for model '${this.model}'.`,
+      ),
+    );
+  }
+
+  public countTokens<T>(_request: LLMGenerateRequest, _schema?: z.ZodType<T>): Promise<LLMTokenCount> {
     return Promise.reject(
       new AppError(
         "LLM_ERROR",
@@ -35,6 +45,10 @@ export class RoutedLLMClient implements LLMClient {
     private readonly settings: Settings,
     private readonly env: NodeJS.ProcessEnv = process.env,
   ) {}
+
+  public countTokens<T>(request: LLMGenerateRequest, schema?: z.ZodType<T>): Promise<LLMTokenCount> {
+    return this.getClientForRole(request.role).countTokens(request, schema);
+  }
 
   public generateObject<T>(request: LLMGenerateRequest, schema: z.ZodType<T>): Promise<LLMGenerateResponse<T>> {
     return this.getClientForRole(request.role).generateObject(request, schema);

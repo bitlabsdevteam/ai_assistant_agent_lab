@@ -35,11 +35,13 @@ import {
 import { addSkill, discoverSkillCatalog, getSkillByName, validateSkillCatalog } from "../skills/registry.js";
 import {
   ChatEventSchema,
+  LLMUsageTelemetryDetailsSchema,
   type ApprovalMode,
   type ChatEvent,
   type ChatSessionStatus,
   type HarnessStatus,
   type InteractiveSessionState,
+  type LLMUsageTelemetryDetails,
   type OperatorMode,
   type OutputFormat,
   type Settings,
@@ -215,10 +217,21 @@ export async function runChatCommand(
           textMode: "assistant",
         });
         activeTurnRenderer = llmStreamRenderer;
+        let latestTokenUsageLine: string | undefined;
+        const onTelemetryEvent = (event: TelemetryEvent) => {
+          const parsedUsage =
+            event.event === "llm.usage.updated" ? LLMUsageTelemetryDetailsSchema.safeParse(event.details) : undefined;
+          if (parsedUsage?.success) {
+            latestTokenUsageLine = formatPersistentTokenUsage(parsedUsage.data);
+          }
+          if (sessionSettings.stream) {
+            llmStreamRenderer.onEvent(event);
+          }
+        };
         const orchestrator = createOrchestrator(
           sessionSettings,
           logger,
-          sessionSettings.stream ? llmStreamRenderer.onEvent : undefined,
+          onTelemetryEvent,
           sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
         );
         const result = await orchestrator.run(prepared.request);
@@ -239,6 +252,7 @@ export async function runChatCommand(
           assistantSummary: replySummary,
           artifactRefs: collectRunArtifacts(result.state),
           runStatus: result.state.status,
+          ...(latestTokenUsageLine ? { latestTokenUsageLine } : {}),
         });
         interactive = await sessionManager.loadInteractiveState(session.sessionId);
         llmStreamRenderer.finish();
@@ -1002,11 +1016,18 @@ function renderStatus(
     `pendingPatch: ${interactive.pendingPatchArtifact ?? "none"}`,
     `lastRunStatus: ${session.lastRunStatus ?? "none"}`,
     `pendingApprovals: ${session.pendingApprovalIds.join(", ") || "none"}`,
+    `latestTokenUsage: ${interactive.latestTokenUsageLine ?? "none"}`,
   ].join("\n");
 }
 
 function renderWelcome(sessionId: string, interactive: InteractiveSessionState): string {
-  return `Chat session ${sessionId}. mode=${interactive.mode} model=${interactive.selectedModel ?? "default"}. Use /help for commands.`;
+  const lines = [
+    `Chat session ${sessionId}. mode=${interactive.mode} model=${interactive.selectedModel ?? "default"}. Use /help for commands.`,
+  ];
+  if (interactive.latestTokenUsageLine) {
+    lines.push(interactive.latestTokenUsageLine);
+  }
+  return lines.join("\n");
 }
 
 function formatPromptLabel(
@@ -1015,7 +1036,11 @@ function formatPromptLabel(
   status?: ChatSessionStatus,
 ): string {
   const suffix = status === "awaiting_approval" ? " (approval)" : "";
-  return `little-helper:${interactive.mode}:${sessionId.slice(-8)}${suffix}> `;
+  const prompt = `little-helper:${interactive.mode}:${sessionId.slice(-8)}${suffix}> `;
+  if (!interactive.latestTokenUsageLine) {
+    return prompt;
+  }
+  return `${interactive.latestTokenUsageLine}\n${prompt}`;
 }
 
 function createSyntheticTurnId(prefix: string, runId: string): string {
@@ -1027,6 +1052,31 @@ function resolveInteractiveSettings(base: Settings, interactive: InteractiveSess
     ...base,
     llmModel: interactive.selectedModel ?? base.llmModel,
   };
+}
+
+function formatPersistentTokenUsage(details: LLMUsageTelemetryDetails): string {
+  if (details.stage !== "response") {
+    return `Context usage: ${Math.round(details.usagePercent)}% (${formatInteger(details.inputTokens)} / ${formatInteger(
+      details.contextWindowTokens,
+    )} tokens)`;
+  }
+
+  const fragments = [
+    `Token usage: total=${formatInteger(details.totalTokens)}`,
+    `input=${formatInteger(details.inputTokens)}`,
+  ];
+  if (details.cachedInputTokens > 0) {
+    fragments.push(`(+ ${formatInteger(details.cachedInputTokens)} cached)`);
+  }
+  fragments.push(`output=${formatInteger(details.outputTokens)}`);
+  if (details.reasoningOutputTokens > 0) {
+    fragments.push(`(reasoning ${formatInteger(details.reasoningOutputTokens)})`);
+  }
+  return fragments.join(" ");
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function parseMode(value: string): OperatorMode {

@@ -129,6 +129,64 @@ describe("chat cli", () => {
     expect(console.output.filter((entry) => entry.includes("> ")).every((entry) => !entry.includes("Working"))).toBe(true);
   }, 10_000);
 
+  it("keeps the latest token usage visible above the next prompt", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-token-usage-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings = createSettings(workspace, artifactDir);
+    const console = new FakeConsole(["hello", "hello", "/exit"]);
+    let runCount = 0;
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: false,
+      },
+      {
+        console,
+        loadSettings: () => Promise.resolve(settings),
+        createOrchestrator: (_settings, _logger, onEvent) =>
+          ({
+            run: async () => {
+              runCount += 1;
+              onEvent?.({
+                runId: `run-${runCount}`,
+                event: "llm.usage.updated",
+                status: "success",
+                timestamp: new Date().toISOString(),
+                details: {
+                  phase: "executor",
+                  model: "gpt-5.4",
+                  provider: "openai",
+                  contextWindowTokens: 128_000,
+                  inputTokens: 53_698,
+                  outputTokens: 7_354,
+                  totalTokens: 61_052,
+                  cachedInputTokens: 644_352,
+                  reasoningOutputTokens: 2_080,
+                  usagePercent: 41.9,
+                  peakUsagePercent: 41.9,
+                  compactionCount: 0,
+                  compactionMode: "full",
+                  stage: "response",
+                },
+              });
+              return createRunResult(`run-${runCount}`, artifactDir, "completed", "Hello! How can I help you today?");
+            },
+            resume: () => Promise.reject(new Error("resume should not be called")),
+          }) as never,
+      },
+    );
+
+    const promptLabels = console.output.filter((entry) => entry.includes("little-helper:suggest:"));
+    expect(promptLabels[1]).toContain(
+      "Token usage: total=61,052 input=53,698 (+ 644,352 cached) output=7,354 (reasoning 2,080)",
+    );
+    expect(promptLabels[1]).toContain("little-helper:suggest:");
+  });
+
   it("resets into a fresh session and stops reusing prior conversation context", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-reset-"));
     const artifactDir = path.join(workspace, ".runs");
@@ -1164,6 +1222,8 @@ function createSettings(workspace: string, artifactDir: string): Settings {
       project: [path.join(workspace, ".little-helper", "skills")],
       user: [path.join(workspace, ".user-skills")],
     },
+    contextCompactionThresholdPercent: 70,
+    llmContextWindows: {},
     mcpServers: [],
   };
 }
@@ -1182,6 +1242,16 @@ function countOccurrences(value: string, needle: string): number {
 
 class ApprovalDriftWeatherLLMClient implements LLMClient {
   private executorCalls = 0;
+
+  public async countTokens<T>(request: LLMGenerateRequest, _schema?: z.ZodType<T>) {
+    const promptChars = renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars;
+    return {
+      provider: "openai",
+      model: "approval-drift-test",
+      inputTokens: Math.max(1, Math.ceil(promptChars / 4)),
+      contextWindowTokens: 128_000,
+    } as const;
+  }
 
   public async generateObject<T>(request: LLMGenerateRequest, schema: z.ZodType<T>): Promise<LLMGenerateResponse<T>> {
     let object: unknown;
@@ -1272,10 +1342,17 @@ class ApprovalDriftWeatherLLMClient implements LLMClient {
     }
 
     const parsed = schema.parse(object);
+    const promptChars = renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars;
+    const inputTokens = Math.max(1, Math.ceil(promptChars / 4));
+    const outputTokens = Math.max(1, Math.ceil(JSON.stringify(parsed).length / 4));
     return {
       object: parsed,
       model: "approval-drift-test",
-      promptChars: renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars,
+      promptChars,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      contextWindowTokens: 128_000,
       estimatedCostUsd: 0,
     };
   }

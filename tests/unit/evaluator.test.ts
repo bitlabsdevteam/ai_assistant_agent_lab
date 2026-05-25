@@ -9,6 +9,7 @@ import { ApprovalManager } from "../../src/harness/approvals.js";
 import { createLogger } from "../../src/logger.js";
 import { ArtifactStore } from "../../src/memory/artifact-store.js";
 import { PermissionPolicy } from "../../src/policy/permissions.js";
+import { TokenUsageTracker } from "../../src/llm/usage-tracker.js";
 import type { AgentStepState, AnalysisResult, ExecutionReport, Settings, ToolCallRecord } from "../../src/schemas.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { DeterministicTestLLMClient } from "../helpers/fake-llm.js";
@@ -35,6 +36,8 @@ function createSettings(workspace: string, overrides: Partial<Settings> = {}): S
       project: [path.join(workspace, ".little-helper", "skills")],
       user: [path.join(workspace, ".user-skills")],
     },
+    contextCompactionThresholdPercent: 70,
+    llmContextWindows: {},
     mcpServers: [],
     ...overrides,
   };
@@ -114,6 +117,19 @@ async function runEvaluator(input: {
   const settings = createSettings(input.workspace, input.settings);
   const artifactStore = new ArtifactStore(settings.artifactDir, "run-1");
   await artifactStore.init();
+  const budget = {
+    maxIterations: 2,
+    toolCallsUsed: 0,
+    promptCharsUsed: 0,
+    promptTokensUsed: 0,
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    lastTotalTokens: 0,
+    lastUsagePercent: 0,
+    peakUsagePercent: 0,
+    compactionCount: 0,
+    estimatedCostUsd: 0,
+  };
 
   return new EvaluatorAgent().run(
     {
@@ -133,12 +149,8 @@ async function runEvaluator(input: {
       approvals: [],
       artifactStore,
       logger: createLogger(settings),
-      budget: {
-        maxIterations: 2,
-        toolCallsUsed: 0,
-        promptCharsUsed: 0,
-        estimatedCostUsd: 0,
-      },
+      budget,
+      usageTracker: new TokenUsageTracker(artifactStore, "run-1", budget),
       stepTrace: input.stepTrace ?? [],
       signal: AbortSignal.timeout(5_000),
     },

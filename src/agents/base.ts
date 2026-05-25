@@ -5,6 +5,7 @@ import type { PermissionPolicy } from "../policy/permissions.js";
 import type { ApprovalManager } from "../harness/approvals.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { LLMClient, LLMStreamEvent } from "../llm/client.js";
+import type { TokenUsageTracker } from "../llm/usage-tracker.js";
 import type {
   AgentContextSnapshot,
   AgentStepState,
@@ -32,6 +33,7 @@ export interface AgentRuntimeContext {
   artifactStore: ArtifactStore;
   logger: Logger;
   budget: RunBudgetState;
+  usageTracker: TokenUsageTracker;
   stepTrace: AgentStepState[];
   runRequest?: RunRequest;
   contextSnapshot?: AgentContextSnapshot;

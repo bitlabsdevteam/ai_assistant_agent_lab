@@ -51,6 +51,9 @@ function parseEnvSettings(env: NodeJS.ProcessEnv): Record<string, unknown> {
     llmBaseUrl: env.LITTLE_HELPER_LLM_BASE_URL,
     llmOrganization: env.LITTLE_HELPER_LLM_ORGANIZATION,
     llmProject: env.LITTLE_HELPER_LLM_PROJECT,
+    contextCompactionThresholdPercent: env.LITTLE_HELPER_CONTEXT_COMPACTION_THRESHOLD_PERCENT
+      ? Number(env.LITTLE_HELPER_CONTEXT_COMPACTION_THRESHOLD_PERCENT)
+      : undefined,
     maxIterations: env.LITTLE_HELPER_MAX_ITERATIONS ? Number(env.LITTLE_HELPER_MAX_ITERATIONS) : undefined,
     approvalMode: env.LITTLE_HELPER_APPROVAL_MODE,
   };

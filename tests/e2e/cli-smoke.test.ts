@@ -25,6 +25,8 @@ describe("cli smoke prerequisites", () => {
         project: [".little-helper/skills"],
         user: [".user-skills"],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     });
 

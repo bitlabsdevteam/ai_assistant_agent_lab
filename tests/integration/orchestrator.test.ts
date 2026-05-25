@@ -43,6 +43,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 
@@ -99,6 +101,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 
@@ -158,6 +162,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 
@@ -207,6 +213,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 
@@ -260,6 +268,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 
@@ -372,6 +382,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 
@@ -431,6 +443,8 @@ describe("orchestrator", () => {
         project: [path.join(workspace, ".little-helper", "skills")],
         user: [path.join(workspace, ".user-skills")],
       },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
       mcpServers: [],
     };
 

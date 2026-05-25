@@ -37,6 +37,8 @@ function createSettings(baseUrl: string, overrides: Partial<Settings> = {}): Set
       project: [path.join(process.cwd(), ".little-helper", "skills")],
       user: [path.join(process.cwd(), ".user-skills")],
     },
+    contextCompactionThresholdPercent: 70,
+    llmContextWindows: {},
     mcpServers: [],
     ...overrides,
   };
@@ -97,6 +99,17 @@ describe("OpenAIResponsesClient", () => {
       return Promise.resolve(new Response(
         JSON.stringify({
           model: "gpt-5.4",
+          usage: {
+            input_tokens: 53_698,
+            input_tokens_details: {
+              cached_tokens: 644_352,
+            },
+            output_tokens: 7_354,
+            output_tokens_details: {
+              reasoning_tokens: 2_080,
+            },
+            total_tokens: 61_052,
+          },
           output_text: JSON.stringify({
             objective: "Create file hello.txt with content hello",
             assumptions: [],
@@ -159,6 +172,8 @@ describe("OpenAIResponsesClient", () => {
 
     expect(response.model).toBe("gpt-5.4");
     expect(response.object.requiredTools).toEqual(["fs.write"]);
+    expect(response.cachedInputTokens).toBe(644_352);
+    expect(response.reasoningOutputTokens).toBe(2_080);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init).toMatchObject({

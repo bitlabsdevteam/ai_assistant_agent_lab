@@ -52,6 +52,7 @@ export interface CompleteChatTurnInput {
   assistantSummary: string;
   artifactRefs: string[];
   runStatus: HarnessStatus;
+  latestTokenUsageLine?: string;
 }
 
 export interface FailChatTurnInput {
@@ -210,6 +211,9 @@ export class ChatSessionManager {
         input.runStatus === "awaiting_approval" || input.runStatus === "blocked" ? input.runId : undefined,
       pendingPatchArtifact: await this.findPendingPatchArtifact(input.sessionId, input.runId),
       recentActivitySummary: summarizeContent(input.assistantSummary),
+      ...(input.latestTokenUsageLine
+        ? { latestTokenUsageLine: input.latestTokenUsageLine }
+        : {}),
     });
     return session;
   }

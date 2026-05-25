@@ -114,6 +114,8 @@ function createSettings(): Settings {
       project: [path.join(process.cwd(), ".little-helper", "skills")],
       user: [path.join(process.cwd(), ".user-skills")],
     },
+    contextCompactionThresholdPercent: 70,
+    llmContextWindows: {},
     mcpServers: [],
   };
 }

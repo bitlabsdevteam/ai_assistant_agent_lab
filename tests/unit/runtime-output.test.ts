@@ -47,7 +47,29 @@ describe("runtime output rendering", () => {
 
     vi.advanceTimersByTime(1);
 
-    expect(writer.lines).toEqual(["\rWorking\u001b[32m.\u001b[39m"]);
+    expect(writer.lines).toEqual([
+      "\r\u001b[32mW\u001b[39m\u001b[2mo\u001b[22m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
+    ]);
+  });
+
+  it("animates the working indicator from left to right in interactive terminals", () => {
+    vi.useFakeTimers();
+    const writer = new BufferingWriter(true);
+    const renderer = createRuntimeTextRenderer(writer, "text");
+
+    renderer.onEvent({
+      runId: "run-1",
+      event: "harness.run_started",
+      status: "success",
+      timestamp: new Date().toISOString(),
+    });
+    vi.advanceTimersByTime(200);
+    vi.advanceTimersByTime(350);
+
+    expect(writer.lines).toEqual([
+      "\r\u001b[32mW\u001b[39m\u001b[2mo\u001b[22m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
+      "\r\u001b[2mW\u001b[22m\u001b[32mo\u001b[39m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
+    ]);
   });
 
   it("stops the working indicator when tool progress becomes visible", () => {
@@ -72,7 +94,7 @@ describe("runtime output rendering", () => {
     vi.advanceTimersByTime(1_000);
 
     expect(writer.lines).toEqual([
-      "\rWorking\u001b[32m.\u001b[39m",
+      "\r\u001b[32mW\u001b[39m\u001b[2mo\u001b[22m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
       "\r\u001b[2K",
       "Searching the web",
     ]);
@@ -100,7 +122,7 @@ describe("runtime output rendering", () => {
     });
 
     expect(writer.lines).toEqual([
-      "\rWorking\u001b[32m.\u001b[39m",
+      "\r\u001b[32mW\u001b[39m\u001b[2mo\u001b[22m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
       "\r\u001b[2K",
       "Hello",
     ]);
@@ -162,9 +184,115 @@ describe("runtime output rendering", () => {
     vi.advanceTimersByTime(1_000);
 
     expect(writer.lines).toEqual([
-      "\rWorking\u001b[32m.\u001b[39m",
+      "\r\u001b[32mW\u001b[39m\u001b[2mo\u001b[22m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
       "\r\u001b[2K",
     ]);
+  });
+
+  it("renders a transient token usage line in interactive terminals", () => {
+    const writer = new BufferingWriter(true);
+    const renderer = createRuntimeTextRenderer(writer, "text");
+
+    renderer.onEvent({
+      runId: "run-1",
+      event: "llm.usage.updated",
+      status: "success",
+      timestamp: new Date().toISOString(),
+      details: {
+        phase: "executor",
+        model: "gpt-5.4",
+        provider: "openai",
+        contextWindowTokens: 128_000,
+        inputTokens: 60_000,
+        outputTokens: 0,
+        totalTokens: 60_000,
+        usagePercent: 46.9,
+        peakUsagePercent: 46.9,
+        compactionCount: 1,
+        compactionMode: "compact",
+        stage: "compaction",
+      },
+    });
+
+    expect(writer.lines).toEqual(["\rContext usage: 47% (60k / 128k tokens) · executor:gpt-5.4"]);
+  });
+
+  it("renders detailed response-stage token usage when available", () => {
+    const writer = new BufferingWriter(true);
+    const renderer = createRuntimeTextRenderer(writer, "text");
+
+    renderer.onEvent({
+      runId: "run-1",
+      event: "llm.usage.updated",
+      status: "success",
+      timestamp: new Date().toISOString(),
+      details: {
+        phase: "executor",
+        model: "gpt-5.4",
+        provider: "openai",
+        contextWindowTokens: 128_000,
+        inputTokens: 53_698,
+        outputTokens: 7_354,
+        totalTokens: 61_052,
+        cachedInputTokens: 644_352,
+        reasoningOutputTokens: 2_080,
+        usagePercent: 41.9,
+        peakUsagePercent: 41.9,
+        compactionCount: 0,
+        compactionMode: "full",
+        stage: "response",
+      },
+    });
+
+    expect(writer.lines).toEqual(["\rToken usage: total=61.1k input=53.7k (+ 644.4k cached) output=7.4k (reasoning 2.1k)"]);
+  });
+
+  it("prints material token usage updates once in non-tty mode", () => {
+    const writer = new BufferingWriter(false);
+    const renderer = createRuntimeTextRenderer(writer, "text");
+
+    renderer.onEvent({
+      runId: "run-1",
+      event: "llm.usage.updated",
+      status: "success",
+      timestamp: new Date().toISOString(),
+      details: {
+        phase: "analyzer",
+        model: "gpt-5.4",
+        provider: "openai",
+        contextWindowTokens: 128_000,
+        inputTokens: 10_000,
+        outputTokens: 0,
+        totalTokens: 10_000,
+        usagePercent: 7.8,
+        peakUsagePercent: 7.8,
+        compactionCount: 0,
+        compactionMode: "full",
+        stage: "preflight",
+      },
+    });
+    renderer.onEvent({
+      runId: "run-1",
+      event: "llm.usage.updated",
+      status: "success",
+      timestamp: new Date().toISOString(),
+      details: {
+        phase: "analyzer",
+        model: "gpt-5.4",
+        provider: "openai",
+        contextWindowTokens: 128_000,
+        inputTokens: 11_000,
+        outputTokens: 0,
+        totalTokens: 11_000,
+        usagePercent: 8.6,
+        peakUsagePercent: 8.6,
+        compactionCount: 0,
+        compactionMode: "full",
+        stage: "preflight",
+      },
+    });
+
+    expect(writer.lines).toEqual(["Context usage: 8% (10k / 128k tokens) · analyzer:gpt-5.4"]);
   });
 
   it("suppresses checkpoint events in text mode", () => {
