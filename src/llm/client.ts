@@ -22,6 +22,7 @@ export interface LLMGenerateRequest {
   prompt: PromptEnvelope;
   input: unknown;
   stream?: LLMStreamCallbacks;
+  signal?: AbortSignal;
 }
 
 export interface LLMGenerateResponse<T> {

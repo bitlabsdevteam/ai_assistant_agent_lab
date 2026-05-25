@@ -108,7 +108,7 @@ export class OpenAIResponsesClient implements LLMClient {
       }),
     );
 
-    const response = await this.fetchWithRetry(requestBody, shouldStream);
+    const response = await this.fetchWithRetry(requestBody, shouldStream, request.signal);
 
     if (!response.ok) {
       const message = await safeReadText(response);
@@ -220,7 +220,7 @@ export class OpenAIResponsesClient implements LLMClient {
     return resolved;
   }
 
-  private async fetchWithRetry(body: string, stream: boolean): Promise<Response> {
+  private async fetchWithRetry(body: string, stream: boolean, signal?: AbortSignal): Promise<Response> {
     let lastFailure:
       | {
           kind: "response";
@@ -239,6 +239,7 @@ export class OpenAIResponsesClient implements LLMClient {
           method: "POST",
           headers: this.buildHeaders(stream),
           body,
+          ...(signal ? { signal } : {}),
         });
         if (!response.ok && isRetryableStatus(response.status) && attempt < MAX_GENERATE_ATTEMPTS) {
           lastFailure = {
@@ -516,7 +517,7 @@ function isRetryableStatus(status: number): boolean {
 }
 
 function isRetryableNetworkError(error: unknown): boolean {
-  return error instanceof TypeError || (error instanceof Error && error.name === "AbortError");
+  return error instanceof TypeError;
 }
 
 function buildNetworkFailureMessage(error: unknown): string {

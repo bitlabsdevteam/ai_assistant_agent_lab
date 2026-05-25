@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
-import { AppError } from "../errors.js";
+import { AppError, toAbortError } from "../errors.js";
 import { SessionStore } from "../memory/session-store.js";
 import type { TerminalSessionState } from "../schemas.js";
 import { redactSecrets } from "../policy/safety.js";
@@ -91,11 +91,35 @@ export class ShellTool implements Tool<typeof ExecInputSchema, typeof ExecOutput
       };
       let stdout = "";
       let stderr = "";
+      let settled = false;
       void sessionStore.upsert(pendingSession);
+
+      const abortListener = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        child.kill("SIGTERM");
+        const endedAt = new Date().toISOString();
+        void sessionStore.upsert({
+          ...pendingSession,
+          lastActivityAt: endedAt,
+          status: "cancelled",
+          endedAt,
+          terminationReason: "operator_cancelled",
+        });
+        reject(toAbortError(context.signal.reason));
+      };
 
       const timeoutMs = input.timeoutMs ?? context.settings.commandTimeoutMs;
       const timeout = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
         child.kill("SIGTERM");
+        context.signal.removeEventListener("abort", abortListener);
         void sessionStore.upsert({
           ...pendingSession,
           lastActivityAt: new Date().toISOString(),
@@ -105,6 +129,7 @@ export class ShellTool implements Tool<typeof ExecInputSchema, typeof ExecOutput
         });
         reject(new AppError("TIMEOUT_ERROR", `Command timed out: ${input.command.join(" ")}`));
       }, timeoutMs);
+      context.signal.addEventListener("abort", abortListener, { once: true });
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
@@ -123,7 +148,12 @@ export class ShellTool implements Tool<typeof ExecInputSchema, typeof ExecOutput
         });
       });
       child.on("error", (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
         clearTimeout(timeout);
+        context.signal.removeEventListener("abort", abortListener);
         void sessionStore.upsert({
           ...pendingSession,
           lastActivityAt: new Date().toISOString(),
@@ -134,7 +164,12 @@ export class ShellTool implements Tool<typeof ExecInputSchema, typeof ExecOutput
         reject(new AppError("TOOL_ERROR", `Failed to execute command: ${executable}`, { cause: error }));
       });
       child.on("close", (exitCode: number | null) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
         clearTimeout(timeout);
+        context.signal.removeEventListener("abort", abortListener);
         const endedAt = new Date().toISOString();
         void persistTerminalState(
           sessionStore,

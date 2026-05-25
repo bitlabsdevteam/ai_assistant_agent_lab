@@ -32,6 +32,9 @@ export class SessionSupervisor {
       return session;
     }
 
+    const cancelled = this.terminateSession(session, "cancelled", "operator_cancelled");
+    await this.sessionStore.upsert(cancelled);
+
     if (session.pid && isPidRunning(session.pid)) {
       try {
         process.kill(session.pid, "SIGTERM");
@@ -41,9 +44,6 @@ export class SessionSupervisor {
         return missing;
       }
     }
-
-    const cancelled = this.terminateSession(session, "cancelled", "operator_cancelled");
-    await this.sessionStore.upsert(cancelled);
     return cancelled;
   }
 

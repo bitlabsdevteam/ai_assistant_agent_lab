@@ -187,6 +187,49 @@ describe("chat cli", () => {
     expect(promptLabels[1]).toContain("little-helper:suggest:");
   });
 
+  it("shows the Esc hint and cancels the active chat run", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-cancel-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings = createSettings(workspace, artifactDir);
+    const console = new FakeConsole(["Long running task", "/exit"]);
+    let aborted = false;
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: true,
+      },
+      {
+        console,
+        loadSettings: () => Promise.resolve({ ...settings, stream: true }),
+        createOrchestrator: () =>
+          ({
+            run: (_request: RunRequest, options?: { signal?: AbortSignal }) =>
+              new Promise((resolve) => {
+                options?.signal?.addEventListener(
+                  "abort",
+                  () => {
+                    aborted = true;
+                    resolve(createRunResult("run-cancelled", artifactDir, "cancelled"));
+                  },
+                  { once: true },
+                );
+                setTimeout(() => console.triggerEscape(), 25);
+              }),
+            resume: () => Promise.reject(new Error("resume should not be called")),
+          }) as never,
+      },
+    );
+
+    expect(aborted).toBe(true);
+    expect(normalizeConsoleOutput(console.output)).toContain("Press Esc to stop or cancel.");
+    expect(normalizeConsoleOutput(console.output)).toContain("Cancelling current task...");
+    expect(normalizeConsoleOutput(console.output)).toContain("Run run-cancelled finished with status cancelled.");
+  });
+
   it("resets into a fresh session and stops reusing prior conversation context", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-reset-"));
     const artifactDir = path.join(workspace, ".runs");
@@ -1170,6 +1213,7 @@ describe("chat cli", () => {
 class FakeConsole {
   public readonly output: string[] = [];
   private index = 0;
+  private escapeHandler: (() => void) | undefined;
 
   public constructor(
     private readonly inputs: string[],
@@ -1193,6 +1237,19 @@ class FakeConsole {
 
   public writeLine(line: string): void {
     this.output.push(line);
+  }
+
+  public bindEscape(onEscape: () => void): () => void {
+    this.escapeHandler = onEscape;
+    return () => {
+      if (this.escapeHandler === onEscape) {
+        this.escapeHandler = undefined;
+      }
+    };
+  }
+
+  public triggerEscape(): void {
+    this.escapeHandler?.();
   }
 
   public async close(): Promise<void> {
@@ -1372,12 +1429,12 @@ function toToolInputEntries(input: Record<string, string | number | boolean>): A
 function createRunResult(
   runId: string,
   artifactDir: string,
-  status: "completed" | "awaiting_approval",
+  status: "completed" | "awaiting_approval" | "cancelled",
   assistantResponse?: string,
 ): {
   state: {
     runId: string;
-    status: "completed" | "awaiting_approval";
+    status: "completed" | "awaiting_approval" | "cancelled";
     phase: string;
     iteration: number;
     startedAt: string;

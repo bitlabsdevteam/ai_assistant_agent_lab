@@ -45,3 +45,23 @@ export function mapErrorCodeToExitCode(code: ErrorCode): number {
       return 4;
   }
 }
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+export function toAbortError(reason?: unknown): Error {
+  if (reason instanceof Error && reason.name === "AbortError") {
+    return reason;
+  }
+
+  const message =
+    typeof reason === "string"
+      ? reason
+      : reason instanceof Error && reason.message.length > 0
+        ? reason.message
+        : "Operation aborted.";
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}

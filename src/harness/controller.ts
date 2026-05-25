@@ -7,7 +7,7 @@ import type { AgentRuntimeContext } from "../agents/base.js";
 import { EvaluatorAgent } from "../agents/evaluator.js";
 import { ExecutorAgent } from "../agents/executor.js";
 import { ContextManager } from "../context/manager.js";
-import { AppError } from "../errors.js";
+import { AppError, isAbortError, toAbortError } from "../errors.js";
 import type { ArtifactStore } from "../memory/artifact-store.js";
 import { createEvent } from "../telemetry/events.js";
 import { ApprovalManager } from "./approvals.js";
@@ -43,6 +43,7 @@ export interface HarnessDependencies {
   policy: PermissionPolicy;
   logger: Logger;
   metrics: MetricsCollector;
+  signal?: AbortSignal;
   onEvent?: (event: TelemetryEvent) => void | Promise<void>;
   onLLMEvent?: (event: LLMStreamEvent) => void | Promise<void>;
 }
@@ -103,134 +104,153 @@ export class HarnessController {
     let execution: ExecutionReport | undefined;
     let evaluation: EvaluationResult | undefined;
     const stepTrace: AgentRuntimeContext["stepTrace"] = [];
+    const runSignal = this.createRunSignal();
 
-    for (let iteration = 0; iteration < request.maxIterations; iteration += 1) {
-      state = {
-        ...state,
-        iteration,
-      };
-      state = transitionRunState(state, iteration === 0 ? "planning" : "revising", "analysis");
-      state = await this.persistWithCheckpoint(state, budget);
-
-      let runtime = this.createAgentContext(request, budget, stepTrace);
-      runtime = await this.attachContextSnapshot(
-        runtime,
-        "analyzer",
-        state,
-        request,
-        buildContextEvidence({ analysis, execution, evaluation }),
-      );
-      await this.writeAgentEvent(state.runId, "started", this.analyzer.name, {
-        phase: state.phase,
-        iteration,
-      });
-      analysis = await this.analyzer.run(request, runtime);
-      state = {
-        ...state,
-        analysisArtifact: await this.dependencies.artifactStore.writeJson("analysis.json", analysis),
-      };
-      await this.writeAgentEvent(state.runId, "completed", this.analyzer.name, {
-        phase: state.phase,
-        iteration,
-      });
-      state = await this.persistWithCheckpoint(state, budget);
-
-      state = transitionRunState(state, "executing", "execution");
-      state = await this.persistWithCheckpoint(state, budget);
-      runtime = await this.attachContextSnapshot(
-        runtime,
-        "executor",
-        state,
-        request,
-        buildContextEvidence({ analysis, execution, evaluation }),
-      );
-      await this.writeAgentEvent(state.runId, "started", this.executor.name, {
-        phase: state.phase,
-        iteration,
-      });
-      execution = await this.executor.run({ analysis }, runtime);
-      state = {
-        ...state,
-        executionArtifact: await this.dependencies.artifactStore.writeJson("execution.json", execution),
-      };
-      await this.dependencies.artifactStore.writeJson("tool-calls.json", execution.toolCalls);
-      await this.dependencies.artifactStore.writeJson("step-trace.jsonl", stepTrace);
-      await this.writeAgentEvent(state.runId, "completed", this.executor.name, {
-        phase: state.phase,
-        iteration,
-      });
-      state = await this.persistWithCheckpoint(state, budget);
-
-      const pendingApproval = this.approvals.pending().length > 0;
-      if (pendingApproval) {
-        state = transitionRunState(state, "awaiting_approval", "approval");
-        state = await this.persistWithCheckpoint(state, budget);
-        await this.writeEvent(state.runId, "harness.awaiting_approval", "pending");
-        break;
-      }
-
-      state = transitionRunState(state, "evaluating", "evaluation");
-      state = await this.persistWithCheckpoint(state, budget);
-      runtime = await this.attachContextSnapshot(
-        runtime,
-        "evaluator",
-        state,
-        request,
-        buildContextEvidence({ analysis, execution, evaluation }),
-      );
-      await this.writeAgentEvent(state.runId, "started", this.evaluator.name, {
-        phase: state.phase,
-        iteration,
-      });
-      evaluation = await this.evaluator.run({ analysis, execution }, runtime);
-      state = {
-        ...state,
-        evaluationArtifact: await this.dependencies.artifactStore.writeJson("evaluation.json", evaluation),
-      };
-      await this.writeAgentEvent(state.runId, "completed", this.evaluator.name, {
-        phase: state.phase,
-        iteration,
-      });
-      await this.writeEvent(
-        state.runId,
-        evaluation.status === "pass" ? "evaluation.passed" : "evaluation.failed",
-        evaluation.status,
-      );
-      state = await this.persistWithCheckpoint(state, budget);
-
-      const nextStatus = this.scheduler.nextStatusFromEvaluation(evaluation);
-      if (nextStatus === "completed") {
-        state = transitionRunState(state, "completed", "finalized");
+    try {
+      for (let iteration = 0; iteration < request.maxIterations; iteration += 1) {
+        runSignal.throwIfAborted();
         state = {
           ...state,
-          finalReportArtifact: await this.finalizer.writeFinalReport({
-            request,
-            state,
-            analysis,
-            execution,
-            evaluation,
-          }),
+          iteration,
         };
+        state = transitionRunState(state, iteration === 0 ? "planning" : "revising", "analysis");
         state = await this.persistWithCheckpoint(state, budget);
-        await this.writeEvent(state.runId, "run.completed", "success");
-        return { state, request, analysis, execution, evaluation };
-      }
-      if (nextStatus === "failed") {
-        state = transitionRunState(state, "failed", "evaluation");
+
+        let runtime = this.createAgentContext(request, budget, stepTrace, runSignal);
+        runtime = await this.attachContextSnapshot(
+          runtime,
+          "analyzer",
+          state,
+          request,
+          buildContextEvidence({ analysis, execution, evaluation }),
+        );
+        await this.writeAgentEvent(state.runId, "started", this.analyzer.name, {
+          phase: state.phase,
+          iteration,
+        });
+        analysis = await this.analyzer.run(request, runtime);
         state = {
           ...state,
-          finalReportArtifact: await this.finalizer.writeFinalReport({
-            request,
-            state,
-            analysis,
-            execution,
-            evaluation,
-          }),
+          analysisArtifact: await this.dependencies.artifactStore.writeJson("analysis.json", analysis),
         };
+        await this.writeAgentEvent(state.runId, "completed", this.analyzer.name, {
+          phase: state.phase,
+          iteration,
+        });
         state = await this.persistWithCheckpoint(state, budget);
-        await this.writeEvent(state.runId, "run.failed", "failed");
-        return { state, request, analysis, execution, evaluation };
+
+        runSignal.throwIfAborted();
+        state = transitionRunState(state, "executing", "execution");
+        state = await this.persistWithCheckpoint(state, budget);
+        runtime = await this.attachContextSnapshot(
+          runtime,
+          "executor",
+          state,
+          request,
+          buildContextEvidence({ analysis, execution, evaluation }),
+        );
+        await this.writeAgentEvent(state.runId, "started", this.executor.name, {
+          phase: state.phase,
+          iteration,
+        });
+        execution = await this.executor.run({ analysis }, runtime);
+        state = {
+          ...state,
+          executionArtifact: await this.dependencies.artifactStore.writeJson("execution.json", execution),
+        };
+        await this.dependencies.artifactStore.writeJson("tool-calls.json", execution.toolCalls);
+        await this.dependencies.artifactStore.writeJson("step-trace.jsonl", stepTrace);
+        await this.writeAgentEvent(state.runId, "completed", this.executor.name, {
+          phase: state.phase,
+          iteration,
+        });
+        state = await this.persistWithCheckpoint(state, budget);
+
+        const pendingApproval = this.approvals.pending().length > 0;
+        if (pendingApproval) {
+          state = transitionRunState(state, "awaiting_approval", "approval");
+          state = await this.persistWithCheckpoint(state, budget);
+          await this.writeEvent(state.runId, "harness.awaiting_approval", "pending");
+          break;
+        }
+
+        runSignal.throwIfAborted();
+        state = transitionRunState(state, "evaluating", "evaluation");
+        state = await this.persistWithCheckpoint(state, budget);
+        runtime = await this.attachContextSnapshot(
+          runtime,
+          "evaluator",
+          state,
+          request,
+          buildContextEvidence({ analysis, execution, evaluation }),
+        );
+        await this.writeAgentEvent(state.runId, "started", this.evaluator.name, {
+          phase: state.phase,
+          iteration,
+        });
+        evaluation = await this.evaluator.run({ analysis, execution }, runtime);
+        state = {
+          ...state,
+          evaluationArtifact: await this.dependencies.artifactStore.writeJson("evaluation.json", evaluation),
+        };
+        await this.writeAgentEvent(state.runId, "completed", this.evaluator.name, {
+          phase: state.phase,
+          iteration,
+        });
+        await this.writeEvent(
+          state.runId,
+          evaluation.status === "pass" ? "evaluation.passed" : "evaluation.failed",
+          evaluation.status,
+        );
+        state = await this.persistWithCheckpoint(state, budget);
+
+        const nextStatus = this.scheduler.nextStatusFromEvaluation(evaluation);
+        if (nextStatus === "completed") {
+          state = transitionRunState(state, "completed", "finalized");
+          state = {
+            ...state,
+            finalReportArtifact: await this.finalizer.writeFinalReport({
+              request,
+              state,
+              analysis,
+              execution,
+              evaluation,
+            }),
+          };
+          state = await this.persistWithCheckpoint(state, budget);
+          await this.writeEvent(state.runId, "run.completed", "success");
+          return { state, request, analysis, execution, evaluation };
+        }
+        if (nextStatus === "failed") {
+          state = transitionRunState(state, "failed", "evaluation");
+          state = {
+            ...state,
+            finalReportArtifact: await this.finalizer.writeFinalReport({
+              request,
+              state,
+              analysis,
+              execution,
+              evaluation,
+            }),
+          };
+          state = await this.persistWithCheckpoint(state, budget);
+          await this.writeEvent(state.runId, "run.failed", "failed");
+          return { state, request, analysis, execution, evaluation };
+        }
       }
+    } catch (error) {
+      if (!this.isCancellation(error, runSignal)) {
+        throw error;
+      }
+      return this.cancelRun({
+        state,
+        request,
+        analysis,
+        execution,
+        evaluation,
+        budget,
+        reason: this.resolveCancellationReason(runSignal, error),
+      });
     }
 
     if (state.status !== "awaiting_approval") {
@@ -293,135 +313,156 @@ export class HarnessController {
     state = this.leaseManager.renew(state);
     state = await this.persistWithCheckpoint(state, recovered.budget);
     await this.writeEvent(state.runId, "harness.resumed", "success");
+    const runSignal = this.createRunSignal();
 
     const stepTrace = await this.readStepTrace();
-    let runtime = this.createAgentContext(recovered.request, recovered.budget, stepTrace);
-    runtime = await this.attachContextSnapshot(
-      runtime,
-      "executor",
-      state,
-      recovered.request,
-      buildContextEvidence({
-        analysis: recovered.analysis,
-        execution: recovered.execution,
-        evaluation: recovered.evaluation,
-      }),
-    );
-    await this.writeAgentEvent(state.runId, "started", this.executor.name, {
-      phase: state.phase,
-      iteration: state.iteration,
-      resume: true,
-    });
-    const execution = await this.executor.run(
-      {
-        analysis: recovered.analysis,
-        ...(recovered.execution ? { priorExecution: recovered.execution } : {}),
-      },
-      runtime,
-    );
-    state = {
-      ...state,
-      executionArtifact: await this.dependencies.artifactStore.writeJson("execution.json", execution),
-    };
-    await this.dependencies.artifactStore.writeJson("tool-calls.json", execution.toolCalls);
-    await this.dependencies.artifactStore.writeJson("step-trace.jsonl", stepTrace);
-    await this.writeAgentEvent(state.runId, "completed", this.executor.name, {
-      phase: state.phase,
-      iteration: state.iteration,
-      resume: true,
-    });
-    state = await this.persistWithCheckpoint(state, recovered.budget);
-
-    if (this.approvals.pending().length > 0) {
-      state = transitionRunState(state, "awaiting_approval", "approval");
+    let execution = recovered.execution;
+    let evaluation = recovered.evaluation;
+    try {
+      runSignal.throwIfAborted();
+      let runtime = this.createAgentContext(recovered.request, recovered.budget, stepTrace, runSignal);
+      runtime = await this.attachContextSnapshot(
+        runtime,
+        "executor",
+        state,
+        recovered.request,
+        buildContextEvidence({
+          analysis: recovered.analysis,
+          execution: recovered.execution,
+          evaluation: recovered.evaluation,
+        }),
+      );
+      await this.writeAgentEvent(state.runId, "started", this.executor.name, {
+        phase: state.phase,
+        iteration: state.iteration,
+        resume: true,
+      });
+      execution = await this.executor.run(
+        {
+          analysis: recovered.analysis,
+          ...(recovered.execution ? { priorExecution: recovered.execution } : {}),
+        },
+        runtime,
+      );
+      state = {
+        ...state,
+        executionArtifact: await this.dependencies.artifactStore.writeJson("execution.json", execution),
+      };
+      await this.dependencies.artifactStore.writeJson("tool-calls.json", execution.toolCalls);
+      await this.dependencies.artifactStore.writeJson("step-trace.jsonl", stepTrace);
+      await this.writeAgentEvent(state.runId, "completed", this.executor.name, {
+        phase: state.phase,
+        iteration: state.iteration,
+        resume: true,
+      });
       state = await this.persistWithCheckpoint(state, recovered.budget);
-      await this.writeEvent(state.runId, "harness.awaiting_approval", "pending");
+
+      if (this.approvals.pending().length > 0) {
+        state = transitionRunState(state, "awaiting_approval", "approval");
+        state = await this.persistWithCheckpoint(state, recovered.budget);
+        await this.writeEvent(state.runId, "harness.awaiting_approval", "pending");
+        return {
+          state,
+          request: recovered.request,
+          analysis: recovered.analysis,
+          execution,
+          evaluation,
+        };
+      }
+
+      runSignal.throwIfAborted();
+      state = transitionRunState(state, "evaluating", "resume-evaluation");
+      state = await this.persistWithCheckpoint(state, recovered.budget);
+      runtime = await this.attachContextSnapshot(
+        runtime,
+        "evaluator",
+        state,
+        recovered.request,
+        buildContextEvidence({
+          analysis: recovered.analysis,
+          execution,
+          evaluation: recovered.evaluation,
+        }),
+      );
+      await this.writeAgentEvent(state.runId, "started", this.evaluator.name, {
+        phase: state.phase,
+        iteration: state.iteration,
+        resume: true,
+      });
+      evaluation = await this.evaluator.run({ analysis: recovered.analysis, execution }, runtime);
+      state = {
+        ...state,
+        evaluationArtifact: await this.dependencies.artifactStore.writeJson("evaluation.json", evaluation),
+      };
+      await this.writeAgentEvent(state.runId, "completed", this.evaluator.name, {
+        phase: state.phase,
+        iteration: state.iteration,
+        resume: true,
+      });
+      state = await this.persistWithCheckpoint(state, recovered.budget);
+
+      const nextStatus = this.scheduler.nextStatusFromEvaluation(evaluation);
+      if (nextStatus === "completed") {
+        state = transitionRunState(state, "completed", "finalized");
+        state = {
+          ...state,
+          finalReportArtifact: await this.finalizer.writeFinalReport({
+            request: recovered.request,
+            state,
+            analysis: recovered.analysis,
+            execution,
+            evaluation,
+          }),
+        };
+        state = await this.persistWithCheckpoint(state, recovered.budget);
+        await this.writeEvent(state.runId, "run.completed", "success");
+      } else if (nextStatus === "failed") {
+        state = transitionRunState(state, "failed", "evaluation");
+        state = {
+          ...state,
+          finalReportArtifact: await this.finalizer.writeFinalReport({
+            request: recovered.request,
+            state,
+            analysis: recovered.analysis,
+            execution,
+            evaluation,
+          }),
+        };
+        state = await this.persistWithCheckpoint(state, recovered.budget);
+        await this.writeEvent(state.runId, "run.failed", "failed");
+      } else {
+        state = transitionRunState(state, "revising", "resume-revision");
+        state = await this.persistWithCheckpoint(state, recovered.budget);
+      }
+
       return {
         state,
         request: recovered.request,
         analysis: recovered.analysis,
         execution,
-        evaluation: recovered.evaluation,
+        evaluation,
       };
-    }
-
-    state = transitionRunState(state, "evaluating", "resume-evaluation");
-    state = await this.persistWithCheckpoint(state, recovered.budget);
-    runtime = await this.attachContextSnapshot(
-      runtime,
-      "evaluator",
-      state,
-      recovered.request,
-      buildContextEvidence({
+    } catch (error) {
+      if (!this.isCancellation(error, runSignal)) {
+        throw error;
+      }
+      return this.cancelRun({
+        state,
+        request: recovered.request,
         analysis: recovered.analysis,
         execution,
-        evaluation: recovered.evaluation,
-      }),
-    );
-    await this.writeAgentEvent(state.runId, "started", this.evaluator.name, {
-      phase: state.phase,
-      iteration: state.iteration,
-      resume: true,
-    });
-    const evaluation = await this.evaluator.run({ analysis: recovered.analysis, execution }, runtime);
-    state = {
-      ...state,
-      evaluationArtifact: await this.dependencies.artifactStore.writeJson("evaluation.json", evaluation),
-    };
-    await this.writeAgentEvent(state.runId, "completed", this.evaluator.name, {
-      phase: state.phase,
-      iteration: state.iteration,
-      resume: true,
-    });
-    state = await this.persistWithCheckpoint(state, recovered.budget);
-
-    const nextStatus = this.scheduler.nextStatusFromEvaluation(evaluation);
-    if (nextStatus === "completed") {
-      state = transitionRunState(state, "completed", "finalized");
-      state = {
-        ...state,
-        finalReportArtifact: await this.finalizer.writeFinalReport({
-          request: recovered.request,
-          state,
-          analysis: recovered.analysis,
-          execution,
-          evaluation,
-        }),
-      };
-      state = await this.persistWithCheckpoint(state, recovered.budget);
-      await this.writeEvent(state.runId, "run.completed", "success");
-    } else if (nextStatus === "failed") {
-      state = transitionRunState(state, "failed", "evaluation");
-      state = {
-        ...state,
-        finalReportArtifact: await this.finalizer.writeFinalReport({
-          request: recovered.request,
-          state,
-          analysis: recovered.analysis,
-          execution,
-          evaluation,
-        }),
-      };
-      state = await this.persistWithCheckpoint(state, recovered.budget);
-      await this.writeEvent(state.runId, "run.failed", "failed");
-    } else {
-      state = transitionRunState(state, "revising", "resume-revision");
-      state = await this.persistWithCheckpoint(state, recovered.budget);
+        evaluation,
+        budget: recovered.budget,
+        reason: this.resolveCancellationReason(runSignal, error),
+      });
     }
-
-    return {
-      state,
-      request: recovered.request,
-      analysis: recovered.analysis,
-      execution,
-      evaluation,
-    };
   }
 
   private createAgentContext(
     request: RunRequest,
     budget: AgentRuntimeContext["budget"],
     stepTrace: AgentRuntimeContext["stepTrace"],
+    signal: AbortSignal,
   ): AgentRuntimeContext {
     const usageTracker = new TokenUsageTracker(
       this.dependencies.artifactStore,
@@ -449,7 +490,62 @@ export class HarnessController {
       runRequest: request,
       ...(this.dependencies.onLLMEvent ? { onLLMEvent: this.dependencies.onLLMEvent } : {}),
       ...(this.dependencies.onEvent ? { onTelemetryEvent: this.dependencies.onEvent } : {}),
-      signal: AbortSignal.timeout(30_000),
+      signal,
+    };
+  }
+
+  private createRunSignal(): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(30_000);
+    return this.dependencies.signal ? AbortSignal.any([this.dependencies.signal, timeoutSignal]) : timeoutSignal;
+  }
+
+  private isCancellation(error: unknown, signal: AbortSignal): boolean {
+    return signal.aborted || isAbortError(error);
+  }
+
+  private resolveCancellationReason(signal: AbortSignal, error: unknown): string {
+    if (signal.reason instanceof Error && signal.reason.message.length > 0) {
+      return signal.reason.message;
+    }
+    if (typeof signal.reason === "string" && signal.reason.length > 0) {
+      return signal.reason;
+    }
+    if (error instanceof Error && error.message.length > 0) {
+      return error.message;
+    }
+    return toAbortError().message;
+  }
+
+  private async cancelRun(input: {
+    state: HarnessRunState;
+    request: RunRequest;
+    analysis: AnalysisResult | undefined;
+    execution: ExecutionReport | undefined;
+    evaluation: EvaluationResult | undefined;
+    budget: AgentRuntimeContext["budget"];
+    reason: string;
+  }): Promise<RunResult> {
+    let state = transitionRunState(input.state, "cancelled", "cancelled");
+    state = {
+      ...state,
+      finalReportArtifact: await this.finalizer.writeFinalReport({
+        request: input.request,
+        state,
+        analysis: input.analysis,
+        execution: input.execution,
+        evaluation: input.evaluation,
+      }),
+    };
+    state = await this.persistWithCheckpoint(state, input.budget);
+    await this.writeEvent(state.runId, "run.cancelled", "cancelled", {
+      reason: input.reason,
+    });
+    return {
+      state,
+      request: input.request,
+      analysis: input.analysis,
+      execution: input.execution,
+      evaluation: input.evaluation,
     };
   }
 

@@ -53,6 +53,7 @@ export class AnalyzerAgent implements Agent<RunRequest, AnalysisResult> {
         role: "analyzer",
         prompt,
         input,
+        signal: context.signal,
         ...(context.onLLMEvent
           ? {
               stream: {

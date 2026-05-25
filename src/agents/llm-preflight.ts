@@ -81,6 +81,7 @@ async function countAndRecord<T>(
       role,
       prompt,
       input: llmInput,
+      signal: context.signal,
     },
     schema,
   );

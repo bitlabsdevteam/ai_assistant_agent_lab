@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -474,7 +475,91 @@ describe("orchestrator", () => {
     expect(promptArtifact.confidential).toBe(true);
     expect(promptArtifact.metadata?.corePromptHash).toBeTruthy();
   });
+
+  it("cancels an in-flight run when the caller aborts the signal", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-cancel-run-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings: Settings = {
+      env: "development",
+      logLevel: "info",
+      artifactDir,
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
+      llmRouting: {},
+      maxIterations: 2,
+      approvalMode: "on-risk",
+      outputFormat: "json",
+      stream: false,
+      maxToolOutputChars: 8_000,
+      commandTimeoutMs: 30_000,
+      shellAllowlist: ["node", "pnpm", "git"],
+      validationCommands: [],
+      allowedRoots: [workspace],
+      networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
+      contextCompactionThresholdPercent: 70,
+      llmContextWindows: {},
+      mcpServers: [],
+    };
+    const abortController = new AbortController();
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new SlowAbortableLLMClient(),
+    });
+
+    const runPromise = orchestrator.run(
+      {
+        task: "Create file cancelled.txt with content never",
+        workingDirectory: workspace,
+        profile: "default",
+        dryRun: false,
+        maxIterations: 2,
+        selectedSkills: [],
+        metadata: {},
+      },
+      { signal: abortController.signal },
+    );
+
+    await delay(25);
+    abortController.abort(new Error("Run cancelled by operator."));
+    const result = await runPromise;
+
+    expect(result.state.status).toBe("cancelled");
+
+    const runs = await readdir(artifactDir);
+    expect(runs).toHaveLength(1);
+    const state = JSON.parse(await readFile(path.join(artifactDir, runs[0] as string, "harness-state.json"), "utf8")) as {
+      status: string;
+    };
+    expect(state.status).toBe("cancelled");
+  });
 });
+
+class SlowAbortableLLMClient {
+  public async countTokens() {
+    return {
+      provider: "openai",
+      model: "slow-test",
+      inputTokens: 32,
+      contextWindowTokens: 128_000,
+    } as const;
+  }
+
+  public async generateObject<T>(request: { signal?: AbortSignal }, _schema: unknown): Promise<T> {
+    return new Promise<T>((_resolve, reject) => {
+      request.signal?.addEventListener("abort", () => reject(request.signal?.reason), { once: true });
+    });
+  }
+
+  public async healthCheck() {
+    return {
+      ok: true,
+      message: "ok",
+    };
+  }
+}
 
 async function readAllFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });

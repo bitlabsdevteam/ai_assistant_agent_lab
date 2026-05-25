@@ -35,6 +35,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
   private readonly maxStepActions = 5;
 
   public async run(input: ExecutorInput, context: AgentRuntimeContext): Promise<ExecutionReport> {
+    context.signal.throwIfAborted();
     const completedSteps = new Set(input.priorExecution?.completedSteps ?? []);
     const skippedSteps = new Set<string>();
     const toolCalls: ToolCallRecord[] = [...(input.priorExecution?.toolCalls ?? [])];
@@ -46,6 +47,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     let latestObservation = "Starting execution.";
 
     for (const step of input.analysis.plan) {
+      context.signal.throwIfAborted();
       if (completedSteps.has(step.id)) {
         continue;
       }
@@ -122,6 +124,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     await this.persistStepMemory(stepMemory, context);
 
     for (let actionIndex = 0; actionIndex < this.maxStepActions; actionIndex += 1) {
+      context.signal.throwIfAborted();
       const action =
         records.length === 0 ? this.buildApprovedReplayAction(step, context, observation) : undefined;
       const resolvedAction = action ?? (await this.chooseAction(step, analysis, context, observation, stepMemory));
@@ -460,6 +463,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
         role: "executor",
         prompt,
         input: llmInput,
+        signal: context.signal,
         ...(context.onLLMEvent
           ? {
               stream: {

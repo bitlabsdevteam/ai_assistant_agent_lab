@@ -7,6 +7,7 @@ import type { Logger } from "pino";
 
 import { applyWorkspaceEnvToProcess } from "../env.js";
 import { AppError } from "../errors.js";
+import { bindProcessEscape, runWithEscapeCancellation } from "../interrupts.js";
 import { ApprovalManager } from "../harness/approvals.js";
 import type { RunResult } from "../harness/controller.js";
 import type { LLMStreamEvent } from "../llm/client.js";
@@ -70,6 +71,7 @@ export interface ChatConsole {
   prompt(label: string): Promise<string>;
   write(text: string): void;
   writeLine(line: string): void;
+  bindEscape?(onEscape: () => void): () => void;
   close(): Promise<void>;
 }
 
@@ -234,7 +236,15 @@ export async function runChatCommand(
           onTelemetryEvent,
           sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
         );
-        const result = await orchestrator.run(prepared.request);
+        const result = await runWithEscapeCancellation(
+          {
+            outputFormat: sessionSettings.outputFormat,
+            enabled: consoleAdapter.isTTY(),
+            writer: consoleAdapter,
+            bindEscape: (onEscape) => consoleAdapter.bindEscape?.(onEscape) ?? bindProcessEscape(onEscape),
+          },
+          (signal) => orchestrator.run(prepared.request, { signal }),
+        );
         const pendingApprovals =
           result.state.status === "awaiting_approval"
             ? await loadPendingRunApprovals(sessionSettings.artifactDir, result.state.runId)
@@ -310,6 +320,10 @@ class ReadlineChatConsole implements ChatConsole {
 
   public write(text: string): void {
     process.stdout.write(text);
+  }
+
+  public bindEscape(onEscape: () => void): () => void {
+    return bindProcessEscape(onEscape);
   }
 
   public close(): Promise<void> {
@@ -714,7 +728,15 @@ async function resumeRunInChat(
     sessionSettings.stream ? llmStreamRenderer.onEvent : undefined,
     sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
   );
-  const result = await orchestrator.resume(runId);
+  const result = await runWithEscapeCancellation(
+    {
+      outputFormat: sessionSettings.outputFormat,
+      enabled: dependencies.console.isTTY(),
+      writer: dependencies.console,
+      bindEscape: (onEscape) => dependencies.console.bindEscape?.(onEscape) ?? bindProcessEscape(onEscape),
+    },
+    (signal) => orchestrator.resume(runId, { signal }),
+  );
   const pendingApprovals =
     result.state.status === "awaiting_approval" ? await loadPendingRunApprovals(sessionSettings.artifactDir, result.state.runId) : [];
   const reply = buildAssistantReply(result, pendingApprovals);

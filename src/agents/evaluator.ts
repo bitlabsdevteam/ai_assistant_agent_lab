@@ -158,6 +158,7 @@ export class EvaluatorAgent
   }
 
   private async evaluateCriterion(criterion: string, objective: string, context: AgentRuntimeContext): Promise<boolean> {
+    context.signal.throwIfAborted();
     const createFileMatch = objective.match(/create file\s+(.+?)\s+with content\s+([\s\S]+)/i);
     if (createFileMatch?.[1] && createFileMatch[2] && criterion.includes(createFileMatch[1].trim())) {
       const target = path.join(context.workingDirectory, createFileMatch[1].trim());

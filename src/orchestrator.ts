@@ -18,6 +18,7 @@ export interface OrchestratorOptions {
 
 export interface OrchestratorRunOptions {
   runId?: string;
+  signal?: AbortSignal;
 }
 
 export class Orchestrator {
@@ -48,6 +49,7 @@ export class Orchestrator {
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
+      ...(options.signal ? { signal: options.signal } : {}),
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
       ...(this.options.onLLMEvent ? { onLLMEvent: this.options.onLLMEvent } : {}),
     });
@@ -73,7 +75,7 @@ export class Orchestrator {
     return controller.recover();
   }
 
-  public async resume(runId: string): Promise<RunResult> {
+  public async resume(runId: string, options: Pick<OrchestratorRunOptions, "signal"> = {}): Promise<RunResult> {
     const runStore = new RunStore(this.settings.artifactDir);
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
@@ -86,6 +88,7 @@ export class Orchestrator {
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
+      ...(options.signal ? { signal: options.signal } : {}),
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
       ...(this.options.onLLMEvent ? { onLLMEvent: this.options.onLLMEvent } : {}),
     });

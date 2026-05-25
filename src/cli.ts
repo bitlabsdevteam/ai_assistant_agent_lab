@@ -9,6 +9,7 @@ import { loadSettings } from "./config.js";
 import { handleApprovalsFlow } from "./commands/approvals-command.js";
 import { applyWorkspaceEnvToProcess } from "./env.js";
 import { AppError } from "./errors.js";
+import { bindProcessEscape, runWithEscapeCancellation } from "./interrupts.js";
 import type { LLMStreamEvent } from "./llm/client.js";
 import { createLLMClient } from "./llm/providers.js";
 import { TokenUsageTracker } from "./llm/usage-tracker.js";
@@ -168,7 +169,15 @@ program
       maxIterations: options.maxIterations ?? settings.maxIterations,
       metadata: {},
     });
-    const result = await orchestrator.run(request);
+    const result = await runWithEscapeCancellation(
+      {
+        outputFormat: settings.outputFormat,
+        enabled: isInteractiveTextOutput(settings.outputFormat),
+        writer: createInterruptWriter(),
+        bindEscape: bindProcessEscape,
+      },
+      (signal) => orchestrator.run(request, { signal }),
+    );
     llmStreamRenderer.finish();
     renderRunResult(
       {
@@ -330,7 +339,15 @@ program
       maxIterations: settings.maxIterations,
       metadata: {},
     });
-    const result = await orchestrator.run(request);
+    const result = await runWithEscapeCancellation(
+      {
+        outputFormat: settings.outputFormat,
+        enabled: isInteractiveTextOutput(settings.outputFormat),
+        writer: createInterruptWriter(),
+        bindEscape: bindProcessEscape,
+      },
+      (signal) => orchestrator.run(request, { signal }),
+    );
     llmStreamRenderer.finish();
     renderWithWriter(
       llmStreamRenderer.writeLine,
@@ -364,7 +381,15 @@ program
           }
         : {},
     );
-    const result = await orchestrator.resume(runId);
+    const result = await runWithEscapeCancellation(
+      {
+        outputFormat: settings.outputFormat,
+        enabled: isInteractiveTextOutput(settings.outputFormat),
+        writer: createInterruptWriter(),
+        bindEscape: bindProcessEscape,
+      },
+      (signal) => orchestrator.resume(runId, { signal }),
+    );
     llmStreamRenderer.finish();
     renderRunResult(
       {
@@ -866,6 +891,18 @@ async function buildReviewReport(artifactStore: ArtifactStore): Promise<Record<s
     evaluation: await safeReadJson<Record<string, unknown>>(artifactStore, "evaluation.json", {}),
     tokenUsage: await safeReadJson<Record<string, unknown> | null>(artifactStore, "token-usage.json", null),
     finalReport,
+  };
+}
+
+function isInteractiveTextOutput(outputFormat: OutputFormat): boolean {
+  return outputFormat === "text" && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+function createInterruptWriter(): { writeLine: (line: string) => void } {
+  return {
+    writeLine: (line) => {
+      process.stdout.write(`${line}\n`);
+    },
   };
 }
 
