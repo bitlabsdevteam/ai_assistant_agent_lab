@@ -23,6 +23,46 @@ export const ToolCategorySchema = z.enum([
 
 export const ChatTurnRoleSchema = z.enum(["user", "assistant", "system"]);
 export const ChatSessionStatusSchema = z.enum(["idle", "running", "awaiting_approval", "blocked"]);
+export const SkillScopeSchema = z.enum(["project", "user"]);
+export const SkillMatchReasonSchema = z.enum([
+  "explicit_name",
+  "explicit_handle",
+  "trigger_match",
+  "tag_match",
+  "description_match",
+]);
+
+const SkillNameSchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z0-9][a-z0-9-]*$/, "Skill names must be lowercase slugs using letters, numbers, and hyphens.");
+
+export const SkillManifestSchema = z.object({
+  name: SkillNameSchema,
+  description: z.string().min(1),
+  triggers: z.array(z.string().min(1)).default([]),
+  tags: z.array(z.string().min(1)).default([]),
+  tools: z.array(z.string().min(1)).default([]),
+  version: z.number().int().positive().default(1),
+  enabled: z.boolean().default(true),
+});
+
+export const ResolvedSkillSchema = SkillManifestSchema.extend({
+  instructions: z.string().min(1),
+  scope: SkillScopeSchema,
+  path: z.string().min(1),
+});
+
+export const SkillSelectionReasonSchema = z.object({
+  type: SkillMatchReasonSchema,
+  detail: z.string().min(1),
+  score: z.number().int().nonnegative(),
+});
+
+export const SkillSelectionSchema = ResolvedSkillSchema.extend({
+  reasons: z.array(SkillSelectionReasonSchema).min(1),
+  totalScore: z.number().int().nonnegative(),
+});
 
 export const RunRequestSchema = z.object({
   task: z.string().min(1),
@@ -30,6 +70,7 @@ export const RunRequestSchema = z.object({
   profile: z.string().default("default"),
   dryRun: z.boolean().default(false),
   maxIterations: z.number().int().positive().default(3),
+  selectedSkills: z.array(SkillSelectionSchema).default([]),
   metadata: z
     .object({
       sessionId: z.string().min(1).optional(),
@@ -419,6 +460,8 @@ export const MetricRecordSchema = z.object({
   runId: z.string().optional(),
 });
 
+export const ContextTrustLevelSchema = z.enum(["trusted", "untrusted_context"]);
+
 export const ContextSourceSchema = z.object({
   kind: z.enum([
     "instruction",
@@ -433,9 +476,11 @@ export const ContextSourceSchema = z.object({
     "tool_output",
     "step_trace",
     "mcp_resource",
+    "skill",
   ]),
   label: z.string(),
   artifact: z.string().optional(),
+  trustLevel: ContextTrustLevelSchema.default("trusted"),
 });
 
 export const AgentContextSnapshotSchema = z.object({
@@ -444,6 +489,50 @@ export const AgentContextSnapshotSchema = z.object({
   promptChars: z.number().int().nonnegative(),
   compacted: z.boolean(),
   sources: z.array(ContextSourceSchema),
+});
+
+export const ProtectedPromptScopeSchema = z.enum(["sealed_core", "runtime_policy"]);
+
+export const ProtectedPromptRefSchema = z.object({
+  id: z.string().min(1),
+  version: z.string().min(1),
+  hash: z.string().min(1),
+  scope: ProtectedPromptScopeSchema,
+  createdAt: z.string().min(1),
+});
+
+export const PromptContextSectionSchema = z.object({
+  label: z.string().min(1),
+  trustLevel: ContextTrustLevelSchema,
+  text: z.string(),
+});
+
+export const PromptContextPayloadSchema = z.object({
+  sections: z.array(PromptContextSectionSchema),
+  sourceRefs: z.array(z.string()).default([]),
+});
+
+export const PromptAttestationSchema = z.object({
+  corePromptHash: z.string().min(1),
+  policyHash: z.string().min(1),
+  appendHash: z.string().min(1),
+  assembledBy: z.string().min(1),
+  assembledAt: z.string().min(1),
+});
+
+export const PromptEnvelopeSchema = z.object({
+  agent: z.enum(["analyzer", "executor", "evaluator"]),
+  corePromptRef: ProtectedPromptRefSchema,
+  policyOverlayRef: ProtectedPromptRefSchema,
+  visibleAppendText: z.string(),
+  contextPayload: PromptContextPayloadSchema,
+  attestation: PromptAttestationSchema,
+});
+
+export const ConfidentialArtifactPolicySchema = z.object({
+  persistPromptBodies: z.literal(false),
+  persistPromptHashes: z.literal(true),
+  allowAdminDecrypt: z.literal(false),
 });
 
 export const ChatEventTypeSchema = z.enum([
@@ -521,6 +610,12 @@ export const SettingsSchema = z.object({
   validationCommands: z.array(z.array(z.string())).default([]),
   allowedRoots: z.array(z.string()).default([]),
   networkAllowlist: z.array(z.string()).default([]),
+  skillDirectories: z
+    .object({
+      project: z.array(z.string()).default([]),
+      user: z.array(z.string()).default([]),
+    })
+    .default({ project: [], user: [] }),
   mcpServers: z.array(MCPServerConfigSchema).default([]),
 });
 
@@ -532,6 +627,12 @@ export type PermissionScope = z.infer<typeof PermissionScopeSchema>;
 export type ToolCategory = z.infer<typeof ToolCategorySchema>;
 export type ChatTurnRole = z.infer<typeof ChatTurnRoleSchema>;
 export type ChatSessionStatus = z.infer<typeof ChatSessionStatusSchema>;
+export type SkillScope = z.infer<typeof SkillScopeSchema>;
+export type SkillMatchReason = z.infer<typeof SkillMatchReasonSchema>;
+export type SkillManifest = z.infer<typeof SkillManifestSchema>;
+export type ResolvedSkill = z.infer<typeof ResolvedSkillSchema>;
+export type SkillSelectionReason = z.infer<typeof SkillSelectionReasonSchema>;
+export type SkillSelection = z.infer<typeof SkillSelectionSchema>;
 export type RunRequest = z.infer<typeof RunRequestSchema>;
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 export type AnalysisResult = z.infer<typeof AnalysisResultSchema>;
@@ -560,8 +661,16 @@ export type HarnessRunState = z.infer<typeof HarnessRunStateSchema>;
 export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
 export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;
 export type MetricRecord = z.infer<typeof MetricRecordSchema>;
+export type ContextTrustLevel = z.infer<typeof ContextTrustLevelSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type AgentContextSnapshot = z.infer<typeof AgentContextSnapshotSchema>;
+export type ProtectedPromptScope = z.infer<typeof ProtectedPromptScopeSchema>;
+export type ProtectedPromptRef = z.infer<typeof ProtectedPromptRefSchema>;
+export type PromptContextSection = z.infer<typeof PromptContextSectionSchema>;
+export type PromptContextPayload = z.infer<typeof PromptContextPayloadSchema>;
+export type PromptAttestation = z.infer<typeof PromptAttestationSchema>;
+export type PromptEnvelope = z.infer<typeof PromptEnvelopeSchema>;
+export type ConfidentialArtifactPolicy = z.infer<typeof ConfidentialArtifactPolicySchema>;
 export type ChatEventType = z.infer<typeof ChatEventTypeSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;

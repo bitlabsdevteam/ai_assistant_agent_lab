@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse, LLMStreamCallbacks } from "./client.js";
 import { zodToJsonSchema } from "./json-schema.js";
+import { renderPromptEnvelopeForTransport } from "./prompts.js";
 import type { ResolvedLLMConfig } from "./routing.js";
 
 type JsonSchema = Record<string, unknown>;
@@ -48,24 +49,17 @@ export class OpenAIResponsesClient implements LLMClient {
     const formatSchemaName = `${request.role}_response`;
     const transportSchema = buildTransportSchema(schema, formatSchemaName);
     const shouldStream = request.stream !== undefined;
+    const promptTransport = renderPromptEnvelopeForTransport(request.prompt, request.input);
     const requestBody = JSON.stringify({
       model: this.config.model,
+      instructions: `${promptTransport.instructions}\n\nReturn only valid JSON that matches the provided schema.`,
       input: [
-        {
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text: `You are the ${request.role} agent in little-helper. Return only valid JSON that matches the provided schema.`,
-            },
-          ],
-        },
         {
           role: "user",
           content: [
             {
               type: "input_text",
-              text: request.prompt,
+              text: promptTransport.inputText,
             },
           ],
         },
@@ -101,7 +95,7 @@ export class OpenAIResponsesClient implements LLMClient {
     return {
       object: parsed,
       model: payload.model ?? this.config.model,
-      promptChars: request.prompt.length,
+      promptChars: promptTransport.promptChars,
       estimatedCostUsd: 0,
     };
   }

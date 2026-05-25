@@ -104,6 +104,20 @@ describe("loadSettings", () => {
     });
   });
 
+  it("resolves default project and user skill directories", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-skill-config-"));
+    const settings = await loadSettings(
+      workspace,
+      {},
+      {
+        HOME: path.join(workspace, "fake-home"),
+      },
+    );
+
+    expect(settings.skillDirectories.project).toEqual([path.join(workspace, ".little-helper", "skills")]);
+    expect(settings.skillDirectories.user).toEqual([path.join(workspace, "fake-home", ".config", "little-helper", "skills")]);
+  });
+
   it("rejects unsupported provider role overrides even when global provider is OpenAI", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-prod-routing-"));
     await writeFile(

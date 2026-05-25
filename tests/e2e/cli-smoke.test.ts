@@ -21,6 +21,10 @@ describe("cli smoke prerequisites", () => {
       validationCommands: [],
       allowedRoots: [process.cwd()],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [".little-helper/skills"],
+        user: [".user-skills"],
+      },
       mcpServers: [],
     });
 

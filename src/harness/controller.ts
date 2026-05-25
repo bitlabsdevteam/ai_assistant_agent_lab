@@ -76,6 +76,7 @@ export class HarnessController {
   public async run(request: RunRequest): Promise<RunResult> {
     await this.dependencies.artifactStore.init();
     await this.approvals.load();
+    await this.dependencies.artifactStore.writeJson("selected-skills.json", request.selectedSkills);
 
     let state = HarnessRunStateSchema.parse({
       runId: this.dependencies.artifactStore.runId,
@@ -437,6 +438,7 @@ export class HarnessController {
       logger: this.dependencies.logger,
       budget,
       stepTrace,
+      runRequest: request,
       ...(this.dependencies.onLLMEvent ? { onLLMEvent: this.dependencies.onLLMEvent } : {}),
       ...(this.dependencies.onEvent ? { onTelemetryEvent: this.dependencies.onEvent } : {}),
       signal: AbortSignal.timeout(30_000),

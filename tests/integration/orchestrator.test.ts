@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -15,6 +15,7 @@ import { DeterministicTestLLMClient } from "../helpers/fake-llm.js";
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("orchestrator", () => {
@@ -38,6 +39,10 @@ describe("orchestrator", () => {
       validationCommands: [],
       allowedRoots: [workspace],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
       mcpServers: [],
     };
 
@@ -50,6 +55,7 @@ describe("orchestrator", () => {
       profile: "default",
       dryRun: false,
       maxIterations: 2,
+      selectedSkills: [],
       metadata: {},
     });
 
@@ -89,6 +95,10 @@ describe("orchestrator", () => {
       validationCommands: [],
       allowedRoots: [workspace],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
       mcpServers: [],
     };
 
@@ -101,6 +111,7 @@ describe("orchestrator", () => {
       profile: "default",
       dryRun: false,
       maxIterations: 2,
+      selectedSkills: [],
       metadata: {},
     });
 
@@ -143,6 +154,10 @@ describe("orchestrator", () => {
       validationCommands: [["node", "-e", "console.log('session-check')"]],
       allowedRoots: [workspace],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
       mcpServers: [],
     };
 
@@ -155,6 +170,7 @@ describe("orchestrator", () => {
       profile: "default",
       dryRun: false,
       maxIterations: 2,
+      selectedSkills: [],
       metadata: {},
     });
 
@@ -187,6 +203,10 @@ describe("orchestrator", () => {
       validationCommands: [],
       allowedRoots: [workspace],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
       mcpServers: [],
     };
 
@@ -208,6 +228,7 @@ describe("orchestrator", () => {
       profile: "default",
       dryRun: false,
       maxIterations: 2,
+      selectedSkills: [],
       metadata: {},
     });
 
@@ -235,6 +256,10 @@ describe("orchestrator", () => {
       validationCommands: [],
       allowedRoots: [workspace],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
       mcpServers: [],
     };
 
@@ -277,6 +302,7 @@ describe("orchestrator", () => {
       profile: "default",
       dryRun: false,
       maxIterations: 2,
+      selectedSkills: [],
       metadata: {},
     });
 
@@ -300,4 +326,152 @@ describe("orchestrator", () => {
     expect(resumed.state.status).toBe("completed");
     expect(resumed.execution?.toolCalls.some((record) => record.toolName === "web.search" && record.status === "success")).toBe(true);
   });
+
+  it("selects an explicit skill, persists its provenance, and injects it into run artifacts", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-skill-run-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const skillRoot = path.join(workspace, ".little-helper", "skills", "react-debugger");
+    await mkdir(skillRoot, { recursive: true });
+    await writeFile(
+      path.join(skillRoot, "SKILL.md"),
+      [
+        "---",
+        "name: react-debugger",
+        "description: Debug React rendering, hooks, and rerender bugs.",
+        "triggers:",
+        "  - rerender loop",
+        "tags:",
+        "  - react",
+        "tools:",
+        "  - fs.read",
+        "version: 1",
+        "enabled: true",
+        "---",
+        "Inspect React components, hook state, and render triggers before editing.",
+      ].join("\n"),
+      "utf8",
+    );
+    const settings: Settings = {
+      env: "development",
+      logLevel: "info",
+      artifactDir,
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
+      llmRouting: {},
+      maxIterations: 2,
+      approvalMode: "on-risk",
+      outputFormat: "json",
+      stream: false,
+      maxToolOutputChars: 8_000,
+      commandTimeoutMs: 30_000,
+      shellAllowlist: ["node", "pnpm", "git"],
+      validationCommands: [],
+      allowedRoots: [workspace],
+      networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
+      mcpServers: [],
+    };
+
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+    });
+    const result = await orchestrator.run({
+      task: "use @react-debugger to help debug this React rerender loop",
+      workingDirectory: workspace,
+      profile: "default",
+      dryRun: false,
+      maxIterations: 2,
+      selectedSkills: [],
+      metadata: {},
+    });
+
+    expect(result.request.selectedSkills.map((skill) => skill.name)).toEqual(["react-debugger"]);
+    expect(result.request.selectedSkills[0]?.reasons[0]?.type).toBe("explicit_handle");
+    const runDir = path.join(artifactDir, result.state.runId);
+    const selectedSkills = JSON.parse(await readFile(path.join(runDir, "selected-skills.json"), "utf8")) as Array<{
+      name: string;
+      reasons: Array<{ type: string }>;
+    }>;
+    const finalReport = await readFile(path.join(runDir, "final-report.md"), "utf8");
+
+    expect(selectedSkills[0]?.name).toBe("react-debugger");
+    expect(selectedSkills[0]?.reasons[0]?.type).toBe("explicit_handle");
+    expect(finalReport).toContain("## Selected Skills");
+    expect(finalReport).toContain("react-debugger");
+  });
+
+  it("redacts sealed prompt bodies from persisted artifacts while retaining prompt metadata", async () => {
+    vi.stubEnv("LITTLE_HELPER_CORE_PROMPT_ANALYZER", "sealed-canary-value");
+    vi.stubEnv("LITTLE_HELPER_CORE_PROMPT_EXECUTOR", "sealed-canary-value");
+    vi.stubEnv("LITTLE_HELPER_CORE_PROMPT_EVALUATOR", "sealed-canary-value");
+
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-prompt-redaction-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings: Settings = {
+      env: "development",
+      logLevel: "info",
+      artifactDir,
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
+      llmRouting: {},
+      maxIterations: 2,
+      approvalMode: "on-risk",
+      outputFormat: "json",
+      stream: false,
+      maxToolOutputChars: 8_000,
+      commandTimeoutMs: 30_000,
+      shellAllowlist: ["node", "pnpm", "git"],
+      validationCommands: [],
+      allowedRoots: [workspace],
+      networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
+      mcpServers: [],
+    };
+
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+    });
+    const result = await orchestrator.run({
+      task: "Create file redacted.txt with content safe output",
+      workingDirectory: workspace,
+      profile: "default",
+      dryRun: false,
+      maxIterations: 2,
+      selectedSkills: [],
+      metadata: {},
+    });
+
+    const runDir = path.join(artifactDir, result.state.runId);
+    const contents = await readAllFiles(runDir);
+    for (const content of contents) {
+      expect(content).not.toContain("sealed-canary-value");
+    }
+
+    const promptArtifact = JSON.parse(await readFile(path.join(runDir, "prompt-envelope-analyzer.json"), "utf8")) as {
+      confidential?: boolean;
+      metadata?: { corePromptHash?: string };
+    };
+    expect(promptArtifact.confidential).toBe(true);
+    expect(promptArtifact.metadata?.corePromptHash).toBeTruthy();
+  });
 });
+
+async function readAllFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const values: string[] = [];
+  for (const entry of entries) {
+    const target = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      values.push(...(await readAllFiles(target)));
+      continue;
+    }
+    values.push(await readFile(target, "utf8"));
+  }
+  return values;
+}

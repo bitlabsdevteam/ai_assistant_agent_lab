@@ -1,5 +1,7 @@
 import type { z } from "zod";
 
+import type { PromptEnvelope } from "../schemas.js";
+
 export interface LLMStreamEvent {
   role: "analyzer" | "executor" | "evaluator";
   type: string;
@@ -17,7 +19,7 @@ export interface LLMStreamCallbacks {
 
 export interface LLMGenerateRequest {
   role: "analyzer" | "executor" | "evaluator";
-  prompt: string;
+  prompt: PromptEnvelope;
   input: unknown;
   stream?: LLMStreamCallbacks;
 }

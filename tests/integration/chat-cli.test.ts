@@ -8,6 +8,7 @@ import type { z } from "zod";
 import { runChatCommand } from "../../src/chat/interactive.js";
 import { loadSettings } from "../../src/config.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse } from "../../src/llm/client.js";
+import { renderPromptEnvelopeForTransport } from "../../src/llm/prompts.js";
 import { ArtifactStore } from "../../src/memory/artifact-store.js";
 import { Orchestrator } from "../../src/orchestrator.js";
 import {
@@ -938,9 +939,64 @@ describe("chat cli", () => {
     );
 
     const output = console.output.join("\n");
+    expect(output).toContain("/skills list");
+    expect(output).toContain("/skills inspect <name>");
+    expect(output).toContain("/skills add <name> [flags]");
     expect(output).toContain("/mcp list");
     expect(output).toContain("/mcp inspect <serverName>");
     expect(output).toContain("/mcp add <name>");
+  });
+
+  it("adds a skill from chat, reloads settings, and uses it on the next turn without restarting", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-skills-add-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const console = new FakeConsole([
+      '/skills add react-debugger --description "Debug React rendering and hook issues." --trigger "rerender loop" --tag react --tool fs.read',
+      "/skills list",
+      "/skills inspect react-debugger",
+      "help debug this React rerender loop",
+      "/exit",
+    ]);
+    const seenSelections: string[][] = [];
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: false,
+      },
+      {
+        console,
+        loadSettings: async (cwd, options) => {
+          return loadSettings(cwd, {
+            artifactDir,
+            outputFormat: options.outputFormat === "json" ? "json" : "text",
+            stream: typeof options.stream === "boolean" ? options.stream : false,
+          });
+        },
+        createOrchestrator: (settings, logger) => {
+          const real = new Orchestrator(settings, logger, {
+            llm: new DeterministicTestLLMClient(),
+          });
+          return {
+            run: async (request: RunRequest) => {
+              const result = await real.run(request);
+              seenSelections.push(result.request.selectedSkills.map((skill) => skill.name));
+              return result;
+            },
+            resume: (runId: string) => real.resume(runId),
+          } as never;
+        },
+      },
+    );
+
+    const output = console.output.join("\n");
+    expect(output).toContain("Added project skill 'react-debugger'");
+    expect(output).toContain("react-debugger [project]");
+    expect(output).toContain("Debug React rendering and hook issues.");
+    expect(seenSelections).toEqual([["react-debugger"]]);
   });
 
   it("parses quoted mcp add args, reloads settings, and uses the added MCP server on the next turn", async () => {
@@ -1048,6 +1104,10 @@ function createSettings(workspace: string, artifactDir: string): Settings {
     validationCommands: [],
     allowedRoots: [workspace],
     networkAllowlist: [],
+    skillDirectories: {
+      project: [path.join(workspace, ".little-helper", "skills")],
+      user: [path.join(workspace, ".user-skills")],
+    },
     mcpServers: [],
   };
 }
@@ -1155,7 +1215,7 @@ class ApprovalDriftWeatherLLMClient implements LLMClient {
     return {
       object: parsed,
       model: "approval-drift-test",
-      promptChars: request.prompt.length,
+      promptChars: renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars,
       estimatedCostUsd: 0,
     };
   }
@@ -1228,6 +1288,7 @@ function createRunResult(
       profile: "default",
       dryRun: false,
       maxIterations: 1,
+      selectedSkills: [],
       metadata: {},
     },
     analysis: {

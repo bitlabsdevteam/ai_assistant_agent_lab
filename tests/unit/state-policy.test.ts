@@ -22,6 +22,10 @@ const settings: Settings = {
   validationCommands: [["pnpm", "test"]],
   allowedRoots: ["/workspace"],
   networkAllowlist: ["example.com"],
+  skillDirectories: {
+    project: ["/workspace/.little-helper/skills"],
+    user: ["/tmp/little-helper-user-skills"],
+  },
   mcpServers: [],
 };
 

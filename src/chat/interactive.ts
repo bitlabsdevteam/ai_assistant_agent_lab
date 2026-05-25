@@ -25,6 +25,15 @@ import {
 import { Orchestrator } from "../orchestrator.js";
 import { createLLMStreamRenderer, renderHarnessEvent } from "../rendering/runtime-output.js";
 import {
+  parseSkillsAddArgv,
+  renderSkillAddResult,
+  renderSkillsCommandHelp,
+  renderSkillInspect,
+  renderSkillList,
+  renderSkillValidation,
+} from "../skills/commands.js";
+import { addSkill, discoverSkillCatalog, getSkillByName, validateSkillCatalog } from "../skills/registry.js";
+import {
   ChatEventSchema,
   type ApprovalMode,
   type ChatEvent,
@@ -380,6 +389,59 @@ async function handleCommand(
       }
 
       throw new AppError("VALIDATION_ERROR", `Unknown MCP command: ${subcommand}. Use /mcp for help.`);
+    }
+    case "/skills": {
+      const subcommand = args[0];
+      if (!subcommand) {
+        dependencies.console.writeLine(renderSkillsCommandHelp());
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "list") {
+        const catalog = await discoverSkillCatalog(dependencies.settings);
+        dependencies.console.writeLine(renderSkillList(catalog.skills, dependencies.settings.outputFormat));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "inspect") {
+        const skillName = args[1];
+        if (!skillName) {
+          throw new AppError("VALIDATION_ERROR", "Usage: /skills inspect <name>");
+        }
+        const skill = await getSkillByName(dependencies.settings, skillName);
+        if (!skill) {
+          throw new AppError("NOT_FOUND", `Skill not found: ${skillName}`);
+        }
+        dependencies.console.writeLine(renderSkillInspect(skill, dependencies.settings.outputFormat));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "validate") {
+        const report = await validateSkillCatalog(dependencies.settings);
+        dependencies.console.writeLine(renderSkillValidation(report, dependencies.settings.outputFormat));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+
+      if (subcommand === "add") {
+        const parsed = parseSkillsAddArgv(args.slice(1));
+        const result = await addSkill({
+          workingDirectory: dependencies.session.workingDirectory,
+          settings: dependencies.settings,
+          scope: parsed.scope,
+          name: parsed.name,
+          triggers: parsed.triggers,
+          tags: parsed.tags,
+          tools: parsed.tools,
+          enabled: !parsed.disabled,
+          ...(parsed.description ? { description: parsed.description } : {}),
+          ...(parsed.from ? { from: parsed.from } : {}),
+        });
+        const reloadedSettings = await dependencies.reloadSettings();
+        dependencies.console.writeLine(renderSkillAddResult(result, dependencies.settings.outputFormat));
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: reloadedSettings };
+      }
+
+      throw new AppError("VALIDATION_ERROR", `Unknown skills command: ${subcommand}. Use /skills for help.`);
     }
     case "/resume": {
       const runId = args[0] ?? dependencies.session.activeRunId;
@@ -891,6 +953,11 @@ function renderHelp(): string {
     "/status",
     "/sessions",
     "/runs",
+    "/skills",
+    "/skills list",
+    "/skills inspect <name>",
+    "/skills add <name> [flags]",
+    "/skills validate",
     "/mcp",
     "/mcp list",
     "/mcp inspect <serverName>",

@@ -1,7 +1,14 @@
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createLLMClient } from "../../src/llm/providers.js";
+import {
+  buildAnalyzerPromptEnvelope,
+  buildEvaluatorPromptEnvelope,
+  buildExecutorPromptEnvelope,
+} from "../../src/llm/prompts.js";
 import { AnalysisResultSchema, ExecutorActionSchema } from "../../src/schemas.js";
 import type { Settings } from "../../src/schemas.js";
 
@@ -26,6 +33,10 @@ function createSettings(baseUrl: string, overrides: Partial<Settings> = {}): Set
     validationCommands: [],
     allowedRoots: [process.cwd()],
     networkAllowlist: [],
+    skillDirectories: {
+      project: [path.join(process.cwd(), ".little-helper", "skills")],
+      user: [path.join(process.cwd(), ".user-skills")],
+    },
     mcpServers: [],
     ...overrides,
   };
@@ -35,6 +46,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("OpenAIResponsesClient", () => {
@@ -70,9 +82,13 @@ describe("OpenAIResponsesClient", () => {
     const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
       const body = parseJsonBody(init?.body) as {
         model: string;
+        instructions?: string;
+        input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
         text?: { format?: { type?: string; schema?: Record<string, unknown> } };
       };
       expect(body.model).toBe("gpt-5.4");
+      expect(body.instructions).toContain("sealed analyzer control plane");
+      expect(body.input?.[0]?.content?.[0]?.text).toContain("Visible append-only customization:");
       expect(body.text?.format?.type).toBe("json_schema");
       expect(body.text?.format?.schema).toMatchObject({
         title: "analyzer_response",
@@ -135,7 +151,7 @@ describe("OpenAIResponsesClient", () => {
     const response = await client.generateObject(
       {
         role: "analyzer",
-        prompt: "Analyze: Create file hello.txt with content hello",
+        prompt: createAnalyzerPromptEnvelope("Create file hello.txt with content hello"),
         input: {},
       },
       schema,
@@ -202,7 +218,7 @@ describe("OpenAIResponsesClient", () => {
     const response = await client.generateObject(
       {
         role: "executor",
-        prompt: "Choose the next executor action",
+        prompt: createExecutorPromptEnvelope(),
         input: {},
       },
       ExecutorActionSchema,
@@ -266,7 +282,7 @@ describe("OpenAIResponsesClient", () => {
     const response = await client.generateObject(
       {
         role: "analyzer",
-        prompt: "Analyze: Create file hello.txt with content hello",
+        prompt: createAnalyzerPromptEnvelope("Create file hello.txt with content hello"),
         input: {},
         stream: {
           onTextDelta: (delta) => {
@@ -343,7 +359,7 @@ describe("OpenAIResponsesClient", () => {
     const promise = client.generateObject(
       {
         role: "analyzer",
-        prompt: "Analyze: Create file hello.txt with content hello",
+        prompt: createAnalyzerPromptEnvelope("Create file hello.txt with content hello"),
         input: {},
       },
       AnalysisResultSchema,
@@ -433,7 +449,7 @@ describe("OpenAIResponsesClient", () => {
     const analysis = await client.generateObject(
       {
         role: "analyzer",
-        prompt: "Analyze: Create file hello.txt with content hello",
+        prompt: createAnalyzerPromptEnvelope("Create file hello.txt with content hello"),
         input: {
           task: "Create file hello.txt with content hello",
           workingDirectory: "/tmp/workspace",
@@ -451,7 +467,7 @@ describe("OpenAIResponsesClient", () => {
     const evaluation = await client.generateObject(
       {
         role: "evaluator",
-        prompt: "Evaluate this execution",
+        prompt: createEvaluatorPromptEnvelope(),
         input: {},
       },
       z.object({ verdict: z.string() }),
@@ -478,6 +494,52 @@ describe("OpenAIResponsesClient", () => {
       ok: false,
       message: "analyzer,executor: OPENAI_API_KEY is not configured. | evaluator: OPENAI_API_KEY is not configured.",
     });
+  });
+
+  it("sends sealed instructions via the OpenAI instructions field without leaking them into user input", async () => {
+    vi.stubEnv("LITTLE_HELPER_CORE_PROMPT_ANALYZER", "sealed-canary-analyzer");
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      const body = parseJsonBody(init?.body) as {
+        instructions?: string;
+        input?: Array<{ content?: Array<{ text?: string }> }>;
+      };
+      expect(body.instructions).toContain("sealed-canary-analyzer");
+      expect(body.input?.[0]?.content?.[0]?.text ?? "").not.toContain("sealed-canary-analyzer");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            model: "gpt-5.4",
+            output_text: JSON.stringify({
+              objective: "Create file hello.txt with content hello",
+              assumptions: [],
+              unknowns: [],
+              successCriteria: ["File 'hello.txt' exists with the requested content."],
+              plan: [],
+              requiredTools: [],
+              riskLevel: "low",
+            }),
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createLLMClient(createSettings("https://example.test/v1"), {
+      OPENAI_API_KEY: "test-key",
+    });
+
+    await client.generateObject(
+      {
+        role: "analyzer",
+        prompt: createAnalyzerPromptEnvelope("Create file hello.txt with content hello"),
+        input: {},
+      },
+      AnalysisResultSchema,
+    );
   });
 });
 
@@ -507,4 +569,117 @@ function createSSEStream(frames: string[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function createAnalyzerPromptEnvelope(task: string) {
+  return buildAnalyzerPromptEnvelope(
+    {
+      task,
+      workingDirectory: "/tmp/workspace",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 1,
+      selectedSkills: [],
+      metadata: {},
+    },
+    [
+      {
+        name: "fs.write",
+        description: "Write files",
+        sideEffecting: true,
+        category: "edit",
+      },
+    ],
+    undefined,
+    {
+      dryRun: false,
+      permissions: ["workspace"],
+      approvalMode: "on-risk",
+    },
+  );
+}
+
+function createExecutorPromptEnvelope() {
+  return buildExecutorPromptEnvelope(
+    {
+      task: "Create file hello.txt with content hello",
+      workingDirectory: "/tmp/workspace",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 1,
+      selectedSkills: [],
+      metadata: {},
+    },
+    {
+      objective: "Create file hello.txt with content hello",
+      assumptions: [],
+      unknowns: [],
+      successCriteria: ["File 'hello.txt' exists with the requested content."],
+      plan: [
+        {
+          id: "write-file",
+          title: "Write file",
+          description: "Create the target file.",
+          agent: "executor",
+          toolNames: ["fs.write"],
+          expectedOutput: "hello.txt created",
+          approvalRequired: false,
+        },
+      ],
+      requiredTools: ["fs.write"],
+      riskLevel: "low",
+    },
+    {
+      id: "write-file",
+      title: "Write file",
+      description: "Create the target file.",
+      agent: "executor",
+      toolNames: ["fs.write"],
+      expectedOutput: "hello.txt created",
+      approvalRequired: false,
+    },
+    undefined,
+    "Starting execution.",
+    undefined,
+    {
+      dryRun: false,
+      permissions: ["workspace"],
+      approvalMode: "on-risk",
+    },
+  );
+}
+
+function createEvaluatorPromptEnvelope() {
+  return buildEvaluatorPromptEnvelope(
+    {
+      task: "Evaluate this execution",
+      workingDirectory: "/tmp/workspace",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 1,
+      selectedSkills: [],
+      metadata: {},
+    },
+    {
+      objective: "Create file hello.txt with content hello",
+      assumptions: [],
+      unknowns: [],
+      successCriteria: ["File 'hello.txt' exists with the requested content."],
+      plan: [],
+      requiredTools: [],
+      riskLevel: "low",
+    },
+    {
+      summary: "Execution completed.",
+      blockers: [],
+      changedFiles: ["hello.txt"],
+      completedSteps: ["write-file"],
+    },
+    undefined,
+    {
+      dryRun: false,
+      permissions: ["workspace"],
+      approvalMode: "on-risk",
+    },
+  );
 }

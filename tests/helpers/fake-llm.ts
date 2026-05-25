@@ -3,6 +3,7 @@ import type { z } from "zod";
 import type { AnalysisResult, EvaluationResult, ExecutionReport, ExecutorAction, RunRequest } from "../../src/schemas.js";
 import { AnalysisResultSchema, EvaluationResultSchema, ExecutorActionSchema } from "../../src/schemas.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse } from "../../src/llm/client.js";
+import { renderPromptEnvelopeForTransport } from "../../src/llm/prompts.js";
 
 export class DeterministicTestLLMClient implements LLMClient {
   public constructor(private readonly model = "gpt-5.4-test") {}
@@ -51,7 +52,7 @@ export class DeterministicTestLLMClient implements LLMClient {
     return {
       object: parsed,
       model: this.model,
-      promptChars: request.prompt.length,
+      promptChars: renderPromptEnvelopeForTransport(request.prompt, request.input).promptChars,
       estimatedCostUsd: 0,
     };
   }

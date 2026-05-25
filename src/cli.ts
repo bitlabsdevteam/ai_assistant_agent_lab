@@ -26,6 +26,14 @@ import { Orchestrator } from "./orchestrator.js";
 import { renderApprovals } from "./rendering/approvals.js";
 import { createLLMStreamRenderer, renderHarnessEvent } from "./rendering/runtime-output.js";
 import { renderRunResult } from "./rendering/run-result.js";
+import {
+  renderSkillAddResult,
+  renderSkillsCommandHelp,
+  renderSkillInspect,
+  renderSkillList,
+  renderSkillValidation,
+} from "./skills/commands.js";
+import { addSkill, discoverSkillCatalog, getSkillByName, validateSkillCatalog } from "./skills/registry.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { RunBudgetStateSchema, RunRequestSchema, type OutputFormat, type Settings, type TelemetryEvent } from "./schemas.js";
 
@@ -71,6 +79,16 @@ interface MCPAddCommandOptions extends BaseOptions {
   timeoutMs?: number;
   allowTool?: string[];
   disabled?: boolean;
+}
+
+interface SkillAddCommandOptions extends BaseOptions {
+  scope?: string;
+  description?: string;
+  trigger?: string[];
+  tag?: string[];
+  tool?: string[];
+  disabled?: boolean;
+  from?: string;
 }
 
 interface CliChatCommandOptions extends InteractiveChatCommandOptions {
@@ -402,6 +420,84 @@ toolsCommand
     const settings = await loadCliSettings(options.cwd, options);
     const tools = (await ToolRegistry.create(settings)).list().map((tool) => tool.descriptor);
     render(tools, settings.outputFormat);
+  });
+
+const skillsCommand = new Command("skills");
+program.addCommand(skillsCommand);
+
+skillsCommand.action(() => {
+  console.log(renderSkillsCommandHelp().replaceAll("/", "little-helper "));
+});
+
+skillsCommand
+  .command("list")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .action(async (options: BaseOptions) => {
+    const settings = await loadCliSettings(options.cwd, options);
+    const catalog = await discoverSkillCatalog(settings);
+    console.log(renderSkillList(catalog.skills, settings.outputFormat));
+  });
+
+skillsCommand
+  .command("inspect")
+  .argument("<name>", "skill name")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .action(async (name: string, options: RunIdCommandOptions) => {
+    const settings = await loadCliSettings(options.cwd, options);
+    const skill = await getSkillByName(settings, name);
+    if (!skill) {
+      throw new AppError("NOT_FOUND", `Skill not found: ${name}`);
+    }
+    console.log(renderSkillInspect(skill, settings.outputFormat));
+  });
+
+skillsCommand
+  .command("add")
+  .argument("<name>", "skill name")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .option("--scope <scope>", "project or user", "project")
+  .option("--description <text>", "skill description")
+  .option("--trigger <text>", "repeatable skill trigger", collectString, [])
+  .option("--tag <text>", "repeatable skill tag", collectString, [])
+  .option("--tool <toolName>", "repeatable tool hint", collectString, [])
+  .option("--disabled", "create the skill in a disabled state", false)
+  .option("--from <path>", "import an existing skill directory or SKILL.md")
+  .action(async (name: string, options: SkillAddCommandOptions) => {
+    const resolvedCwd = path.resolve(options.cwd);
+    const settings = await loadCliSettings(resolvedCwd, options);
+    const description = asString(options.description);
+    const from = asString(options.from);
+    const result = await addSkill({
+      workingDirectory: resolvedCwd,
+      settings,
+      scope: (asString(options.scope) as "project" | "user" | undefined) ?? "project",
+      name,
+      triggers: asStringArray(options.trigger),
+      tags: asStringArray(options.tag),
+      tools: asStringArray(options.tool),
+      enabled: !Boolean(options.disabled),
+      ...(description ? { description } : {}),
+      ...(from ? { from } : {}),
+    });
+    console.log(renderSkillAddResult(result, settings.outputFormat));
+  });
+
+skillsCommand
+  .command("validate")
+  .option("--cwd <path>", "working directory", process.cwd())
+  .option("--artifact-dir <path>", "artifact directory override")
+  .option("--output <format>", "text or json", "text")
+  .action(async (options: BaseOptions) => {
+    const settings = await loadCliSettings(options.cwd, options);
+    const report = await validateSkillCatalog(settings);
+    console.log(renderSkillValidation(report, settings.outputFormat));
+    process.exitCode = report.ok ? 0 : 2;
   });
 
 const mcpCommand = new Command("mcp");

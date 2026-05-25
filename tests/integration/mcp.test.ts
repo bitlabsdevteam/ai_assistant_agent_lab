@@ -32,6 +32,10 @@ describe("mcp bridge", () => {
       validationCommands: [],
       allowedRoots: [workspace],
       networkAllowlist: [],
+      skillDirectories: {
+        project: [path.join(workspace, ".little-helper", "skills")],
+        user: [path.join(workspace, ".user-skills")],
+      },
       mcpServers: [
         {
           name: "mock",

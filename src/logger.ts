@@ -6,7 +6,19 @@ export function createLogger(settings: Settings): Logger {
   const options = {
     level: settings.logLevel,
     redact: {
-      paths: ["*.apiKey", "*.token", "*.secret", "details.headers.authorization"],
+      paths: [
+        "*.apiKey",
+        "*.token",
+        "*.secret",
+        "*.prompt",
+        "*.instructions",
+        "*.visibleAppendText",
+        "*.contextPayload.sections.*.text",
+        "*.transport.instructions",
+        "*.transport.inputText",
+        "*.requestBody",
+        "details.headers.authorization",
+      ],
       censor: "[REDACTED]",
     },
     ...(settings.env === "development"

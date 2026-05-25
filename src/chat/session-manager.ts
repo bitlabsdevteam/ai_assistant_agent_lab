@@ -168,6 +168,7 @@ export class ChatSessionManager {
       profile: input.profile,
       dryRun: input.dryRun,
       maxIterations: input.maxIterations,
+      selectedSkills: [],
       metadata: {
         sessionId: updatedSession.sessionId,
         turnId,

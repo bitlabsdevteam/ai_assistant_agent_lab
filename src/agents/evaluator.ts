@@ -4,7 +4,11 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { buildEvaluatorPrompt } from "../llm/prompts.js";
+import {
+  buildEvaluatorPromptEnvelope,
+  buildPromptArtifactRecord,
+  renderPromptEnvelopeForTransport,
+} from "../llm/prompts.js";
 import { EvaluationResultSchema, type AnalysisResult, type EvaluationResult, type ExecutionReport } from "../schemas.js";
 import type { Agent, AgentRuntimeContext } from "./base.js";
 
@@ -17,8 +21,40 @@ export class EvaluatorAgent
     input: { analysis: AnalysisResult; execution: ExecutionReport },
     context: AgentRuntimeContext,
   ): Promise<EvaluationResult> {
-    const prompt = buildEvaluatorPrompt(input.analysis, input.execution, context.contextSnapshot);
-    context.budget.promptCharsUsed += prompt.length;
+    const prompt = buildEvaluatorPromptEnvelope(
+      context.runRequest ?? {
+        task: input.analysis.objective,
+        workingDirectory: context.workingDirectory,
+        profile: "default",
+        dryRun: context.dryRun,
+        maxIterations: context.budget.maxIterations,
+        selectedSkills: [],
+        metadata: {},
+      },
+      input.analysis,
+      input.execution,
+      context.contextSnapshot,
+      {
+        dryRun: context.dryRun,
+        permissions: context.permissions,
+        approvalMode: context.settings.approvalMode,
+        ...(context.operatorMode ? { operatorMode: context.operatorMode } : {}),
+      },
+    );
+    await context.artifactStore.writeJson(
+      "prompt-envelope-evaluator.json",
+      {
+        envelope: prompt,
+        transport: renderPromptEnvelopeForTransport(prompt, {
+          analysis: input.analysis,
+          execution: input.execution,
+        }),
+      },
+      {
+        confidentiality: "metadata_only",
+        metadata: buildPromptArtifactRecord(prompt),
+      },
+    );
 
     const passedCriteria: string[] = [];
     const failedCriteria: string[] = [];
@@ -105,7 +141,7 @@ export class EvaluatorAgent
       productionReadinessNotes.push("No validation commands configured or auto-detected.");
     }
 
-    return EvaluationResultSchema.parse({
+    const result = EvaluationResultSchema.parse({
       status: failedCriteria.length === 0 ? "pass" : "needs_revision",
       passedCriteria,
       failedCriteria,
@@ -114,6 +150,11 @@ export class EvaluatorAgent
       validationDecisions,
       productionReadinessNotes,
     });
+    context.budget.promptCharsUsed += renderPromptEnvelopeForTransport(prompt, {
+      analysis: input.analysis,
+      execution: input.execution,
+    }).promptChars;
+    return result;
   }
 
   private async evaluateCriterion(criterion: string, objective: string, context: AgentRuntimeContext): Promise<boolean> {

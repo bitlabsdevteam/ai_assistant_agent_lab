@@ -3,7 +3,11 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
-import { buildExecutorPrompt } from "../llm/prompts.js";
+import {
+  buildExecutorPromptEnvelope,
+  buildPromptArtifactRecord,
+  renderPromptEnvelopeForTransport,
+} from "../llm/prompts.js";
 import { AppError } from "../errors.js";
 import { buildApprovalRequest } from "../policy/permissions.js";
 import type {
@@ -401,7 +405,45 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     observation: string,
     stepMemory: ExecutorStepMemory,
   ): Promise<ExecutorAction> {
-    const prompt = buildExecutorPrompt(analysis, step, context.contextSnapshot, observation, stepMemory);
+    const prompt = buildExecutorPromptEnvelope(
+      context.runRequest ?? {
+        task: analysis.objective,
+        workingDirectory: context.workingDirectory,
+        profile: "default",
+        dryRun: context.dryRun,
+        maxIterations: context.budget.maxIterations,
+        selectedSkills: [],
+        metadata: {},
+      },
+      analysis,
+      step,
+      context.contextSnapshot,
+      observation,
+      stepMemory,
+      {
+        dryRun: context.dryRun,
+        permissions: context.permissions,
+        approvalMode: context.settings.approvalMode,
+        ...(context.operatorMode ? { operatorMode: context.operatorMode } : {}),
+      },
+    );
+    await context.artifactStore.writeJson(
+      `prompt-envelope-executor-${step.id}.json`,
+      {
+        envelope: prompt,
+        transport: renderPromptEnvelopeForTransport(prompt, {
+          analysis,
+          step,
+          observation,
+          stepMemory,
+          operatorMode: context.operatorMode ?? "full-auto",
+        }),
+      },
+      {
+        confidentiality: "metadata_only",
+        metadata: buildPromptArtifactRecord(prompt),
+      },
+    );
     const response = await context.llm.generateObject(
       {
         role: "executor",

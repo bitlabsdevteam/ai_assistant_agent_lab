@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { handleApprovalsFlow, type ApprovalManagerLike } from "../../src/commands/approvals-command.js";
@@ -108,6 +110,10 @@ function createSettings(): Settings {
     validationCommands: [],
     allowedRoots: [process.cwd()],
     networkAllowlist: [],
+    skillDirectories: {
+      project: [path.join(process.cwd(), ".little-helper", "skills")],
+      user: [path.join(process.cwd(), ".user-skills")],
+    },
     mcpServers: [],
   };
 }

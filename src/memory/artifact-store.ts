@@ -3,6 +3,11 @@ import path from "node:path";
 
 import { AppError } from "../errors.js";
 
+export interface ArtifactWriteOptions {
+  confidentiality?: "public" | "metadata_only" | "deny";
+  metadata?: unknown;
+}
+
 export class ArtifactStore {
   public readonly runDirectory: string;
   public readonly checkpointsDirectory: string;
@@ -31,27 +36,27 @@ export class ArtifactStore {
     return path.join(this.artifactsDirectory, fileName);
   }
 
-  public async writeJson(fileName: string, value: unknown): Promise<string> {
+  public async writeJson(fileName: string, value: unknown, options?: ArtifactWriteOptions): Promise<string> {
     const target = this.resolve(fileName);
-    await writeFile(target, JSON.stringify(value, null, 2), "utf8");
+    await writeFile(target, JSON.stringify(prepareJsonPayload(value, options), null, 2), "utf8");
     return target;
   }
 
-  public async writeArtifactJson(fileName: string, value: unknown): Promise<string> {
+  public async writeArtifactJson(fileName: string, value: unknown, options?: ArtifactWriteOptions): Promise<string> {
     const target = this.resolveArtifact(fileName);
-    await writeFile(target, JSON.stringify(value, null, 2), "utf8");
+    await writeFile(target, JSON.stringify(prepareJsonPayload(value, options), null, 2), "utf8");
     return target;
   }
 
-  public async writeArtifactText(fileName: string, value: string): Promise<string> {
+  public async writeArtifactText(fileName: string, value: string, options?: ArtifactWriteOptions): Promise<string> {
     const target = this.resolveArtifact(fileName);
-    await writeFile(target, value, "utf8");
+    await writeFile(target, prepareTextPayload(value, options), "utf8");
     return target;
   }
 
-  public async writeText(fileName: string, value: string): Promise<string> {
+  public async writeText(fileName: string, value: string, options?: ArtifactWriteOptions): Promise<string> {
     const target = this.resolve(fileName);
-    await writeFile(target, value, "utf8");
+    await writeFile(target, prepareTextPayload(value, options), "utf8");
     return target;
   }
 
@@ -80,4 +85,24 @@ export class ArtifactStore {
   public async listRunFiles(): Promise<string[]> {
     return readdir(this.runDirectory);
   }
+}
+
+function prepareJsonPayload(value: unknown, options?: ArtifactWriteOptions): unknown {
+  if (!options || options.confidentiality === "public") {
+    return value;
+  }
+  return {
+    confidential: true,
+    mode: options.confidentiality,
+    metadata: options.metadata ?? null,
+  };
+}
+
+function prepareTextPayload(value: string, options?: ArtifactWriteOptions): string {
+  if (!options || options.confidentiality === "public") {
+    return value;
+  }
+  const mode = options.confidentiality ?? "public";
+  const metadata = options.metadata === undefined ? "" : `\n${JSON.stringify(options.metadata, null, 2)}`;
+  return `[CONFIDENTIAL ARTIFACT ${mode.toUpperCase()}]${metadata}`;
 }

@@ -22,6 +22,7 @@ describe("ContextManager", () => {
         profile: "default",
         dryRun: false,
         maxIterations: 2,
+        selectedSkills: [],
         metadata: {},
       },
       state: {
@@ -80,6 +81,8 @@ describe("ContextManager", () => {
     expect(snapshot.sources.length).toBeGreaterThan(0);
     expect(snapshot.summary).toContain("User task:");
     expect(snapshot.summary).toContain("Plan steps:");
+    expect(snapshot.summary).toContain("[untrusted_context]");
+    expect(snapshot.sources.some((source) => source.trustLevel === "untrusted_context")).toBe(true);
   });
 
   it("compacts oversized context summaries", async () => {
@@ -96,6 +99,7 @@ describe("ContextManager", () => {
         profile: "default",
         dryRun: true,
         maxIterations: 1,
+        selectedSkills: [],
         metadata: {},
       },
       state: {

@@ -28,6 +28,10 @@ function createSettings(workspace: string): Settings {
     validationCommands: [],
     allowedRoots: [workspace],
     networkAllowlist: ["api.perplexity.ai"],
+    skillDirectories: {
+      project: [path.join(workspace, ".little-helper", "skills")],
+      user: [path.join(workspace, ".user-skills")],
+    },
     mcpServers: [],
   };
 }

@@ -32,24 +32,26 @@ export class ContextManager {
     const sections: string[] = [];
     const sources: AgentContextSnapshot["sources"] = [];
 
-    sections.push("Instruction hierarchy:");
+    sections.push("[trusted] Instruction hierarchy:");
     sections.push("1. System and developer instructions");
     sections.push("2. User task");
     sections.push("3. Current persisted run state");
     sections.push("4. Retrieved evidence and prior outputs");
-    sources.push({ kind: "instruction", label: "Instruction hierarchy" });
+    sources.push({ kind: "instruction", label: "Instruction hierarchy", trustLevel: "trusted" });
 
-    sections.push(`User task: ${input.request.task}`);
+    sections.push(`[trusted] User task: ${input.request.task}`);
     sources.push({
       kind: "user_task",
       label: "Run request",
       artifact: this.artifactStore.resolve("request.json"),
+      trustLevel: "trusted",
     });
 
     if (input.request.conversationContext) {
       const chat = input.request.conversationContext;
       sections.push(
         [
+          "[trusted] Chat context:",
           `Chat session: ${chat.sessionId}`,
           `Latest user message: ${chat.latestUserMessage}`,
           `Conversation summary: ${chat.conversationSummary || "none"}`,
@@ -65,34 +67,56 @@ export class ContextManager {
         kind: "chat_session",
         label: "Chat session summary",
         artifact: this.artifactStore.resolve("request.json"),
+        trustLevel: "trusted",
       });
       for (const artifact of chat.includedArtifactRefs) {
         sources.push({
           kind: "chat_session",
           label: "Referenced chat artifact",
           artifact,
+          trustLevel: "untrusted_context",
         });
       }
     }
 
-    sections.push(`Run state: status=${input.state.status}, phase=${input.state.phase}, iteration=${input.state.iteration}`);
+    if (input.request.selectedSkills.length > 0) {
+      sections.push(
+        `[trusted] Selected skills: ${input.request.selectedSkills
+          .map((skill) => `${skill.name}[${skill.scope}]: ${skill.reasons.map((reason) => reason.detail).join("; ")}`)
+          .join(" | ")}`,
+      );
+      sources.push({
+        kind: "skill",
+        label: "Selected skills",
+        artifact: this.artifactStore.resolve("selected-skills.json"),
+        trustLevel: "trusted",
+      });
+    }
+
+    sections.push(
+      `[trusted] Run state: status=${input.state.status}, phase=${input.state.phase}, iteration=${input.state.iteration}`,
+    );
     sources.push({
       kind: "run_state",
       label: "Harness run state",
       artifact: this.artifactStore.resolve("harness-state.json"),
+      trustLevel: "trusted",
     });
 
     if (input.analysis) {
       sections.push(
-        `Analysis objective: ${input.analysis.objective}\nSuccess criteria: ${input.analysis.successCriteria.join("; ")}`,
+        `[untrusted_context] Analysis objective: ${input.analysis.objective}\nSuccess criteria: ${input.analysis.successCriteria.join("; ")}`,
       );
       sections.push(
-        `Plan steps: ${input.analysis.plan.map((step) => `${step.id}:${step.title}[${step.toolNames.join(",")}]`).join(" | ")}`,
+        `[untrusted_context] Plan steps: ${input.analysis.plan
+          .map((step) => `${step.id}:${step.title}[${step.toolNames.join(",")}]`)
+          .join(" | ")}`,
       );
       sources.push({
         kind: "analysis",
         label: "Analyzer result",
         artifact: this.artifactStore.resolve("analysis.json"),
+        trustLevel: "untrusted_context",
       });
     }
 
@@ -102,14 +126,14 @@ export class ContextManager {
         .filter((artifact): artifact is string => typeof artifact === "string")
         .slice(-5);
       sections.push(
-        `Execution summary: ${input.execution.summary}\nCompleted: ${input.execution.completedSteps.join(", ") || "none"}\nBlockers: ${
-          input.execution.blockers.join("; ") || "none"
-        }`,
+        `[untrusted_context] Execution summary: ${input.execution.summary}\nCompleted: ${
+          input.execution.completedSteps.join(", ") || "none"
+        }\nBlockers: ${input.execution.blockers.join("; ") || "none"}`,
       );
       const recentToolCalls = input.execution.toolCalls.slice(-5);
       if (recentToolCalls.length > 0) {
         sections.push(
-          `Recent tool calls: ${recentToolCalls
+          `[untrusted_context] Recent tool calls: ${recentToolCalls
             .map((call) => `${call.toolName}:${call.status}${call.error ? `(${call.error})` : ""}`)
             .join(" | ")}`,
         );
@@ -117,27 +141,29 @@ export class ContextManager {
           kind: "tool_output",
           label: "Execution tool calls",
           artifact: this.artifactStore.resolve("tool-calls.json"),
+          trustLevel: "untrusted_context",
         });
       }
       sources.push({
         kind: "execution",
         label: "Execution report",
         artifact: this.artifactStore.resolve("execution.json"),
+        trustLevel: "untrusted_context",
       });
       if (recentDiffs.length > 0) {
-        sections.push(`Current diff state: ${recentDiffs.join(" | ")}`);
+        sections.push(`[untrusted_context] Current diff state: ${recentDiffs.join(" | ")}`);
       }
     }
 
     if (input.evaluation) {
       sections.push(
-        `Evaluation status: ${input.evaluation.status}\nRequired revisions: ${
+        `[untrusted_context] Evaluation status: ${input.evaluation.status}\nRequired revisions: ${
           input.evaluation.requiredRevisions.join("; ") || "none"
         }`,
       );
       if (input.evaluation.validationDecisions.length > 0) {
         sections.push(
-          `Validation history: ${input.evaluation.validationDecisions
+          `[untrusted_context] Validation history: ${input.evaluation.validationDecisions
             .map((decision) => `${decision.command.join(" ")}:${decision.status}`)
             .join(" | ")}`,
         );
@@ -146,13 +172,14 @@ export class ContextManager {
         kind: "evaluation",
         label: "Evaluation result",
         artifact: this.artifactStore.resolve("evaluation.json"),
+        trustLevel: "untrusted_context",
       });
     }
 
     if ((input.revisions?.length ?? 0) > 0) {
       const recentRevisions = input.revisions!.slice(-5);
       sections.push(
-        `Revision history: ${recentRevisions
+        `[untrusted_context] Revision history: ${recentRevisions
           .map((revision) => `iter${revision.iteration}:${revision.evaluationStatus}:${revision.requiredRevisions.join(" / ") || "none"}`)
           .join(" | ")}`,
       );
@@ -160,13 +187,14 @@ export class ContextManager {
         kind: "revision",
         label: "Revision history",
         artifact: this.artifactStore.resolve("revisions.json"),
+        trustLevel: "untrusted_context",
       });
     }
 
     if ((input.approvals?.length ?? 0) > 0) {
       const recentApprovals = input.approvals!.slice(-5);
       sections.push(
-        `Approvals: ${recentApprovals
+        `[untrusted_context] Approvals: ${recentApprovals
           .map((approval) => `${approval.toolName}:${approval.status}${approval.stepId ? `@${approval.stepId}` : ""}`)
           .join(" | ")}`,
       );
@@ -174,13 +202,14 @@ export class ContextManager {
         kind: "approval",
         label: "Approval decisions",
         artifact: this.artifactStore.resolve("approvals.json"),
+        trustLevel: "untrusted_context",
       });
     }
 
     if ((input.stepTrace?.length ?? 0) > 0) {
       const recentSteps = input.stepTrace!.slice(-5);
       sections.push(
-        `Recent step trace: ${recentSteps
+        `[untrusted_context] Recent step trace: ${recentSteps
           .map((step) => `${step.stepId}:${step.chosenActionName}:${step.resultSummary ?? "pending"}`)
           .join(" | ")}`,
       );
@@ -188,6 +217,7 @@ export class ContextManager {
         kind: "step_trace",
         label: "Executor step trace",
         artifact: this.artifactStore.resolve("step-trace.jsonl"),
+        trustLevel: "untrusted_context",
       });
     }
 

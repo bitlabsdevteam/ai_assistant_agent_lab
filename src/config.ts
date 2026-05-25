@@ -9,6 +9,7 @@ import { AppError } from "./errors.js";
 import { loadWorkspaceEnv } from "./env.js";
 import { listResolvedLLMConfigs } from "./llm/routing.js";
 import { mergeMCPServerConfigs } from "./mcp/config-manager.js";
+import { resolveSkillDirectories } from "./skills/registry.js";
 import { SettingsSchema, type ApprovalMode, type OutputFormat, type Settings } from "./schemas.js";
 
 const PartialSettingsSchema = SettingsSchema.partial();
@@ -107,6 +108,11 @@ export async function loadSettings(
     ...parsed.data,
     artifactDir: resolveArtifactDir(workingDirectory, parsed.data.artifactDir),
     allowedRoots: normalizeRoots(workingDirectory, parsed.data.allowedRoots),
+    skillDirectories: resolveSkillDirectories(
+      workingDirectory,
+      resolvedEnv.HOME ?? homedir(),
+      parsed.data.skillDirectories,
+    ),
   });
 
   validateProductionSettings(settings, resolvedEnv);

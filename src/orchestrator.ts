@@ -4,6 +4,7 @@ import type { LLMClient, LLMStreamEvent } from "./llm/client.js";
 import { createLLMClient } from "./llm/providers.js";
 import { RunStore, createRunId } from "./memory/run-store.js";
 import { PermissionPolicy } from "./policy/permissions.js";
+import { discoverSkillCatalog, selectSkills } from "./skills/registry.js";
 import { MetricsCollector } from "./telemetry/metrics.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { HarnessController, type RunResult } from "./harness/controller.js";
@@ -29,6 +30,12 @@ export class Orchestrator {
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
     const llm = this.options.llm ?? createLLMClient(this.settings);
+    const skillCatalog = await discoverSkillCatalog(this.settings);
+    const selectedSkills = selectSkills(request.task, skillCatalog.skills);
+    const enrichedRequest: RunRequest = {
+      ...request,
+      selectedSkills,
+    };
     const controller = new HarnessController({
       runStore,
       artifactStore,
@@ -40,7 +47,7 @@ export class Orchestrator {
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
       ...(this.options.onLLMEvent ? { onLLMEvent: this.options.onLLMEvent } : {}),
     });
-    return controller.run(request);
+    return controller.run(enrichedRequest);
   }
 
   public async recover(runId: string): Promise<RunResult["state"]> {

@@ -12,6 +12,7 @@ import type {
   OperatorMode,
   PermissionScope,
   RunBudgetState,
+  RunRequest,
   Settings,
   TelemetryEvent,
 } from "../schemas.js";
@@ -32,6 +33,7 @@ export interface AgentRuntimeContext {
   logger: Logger;
   budget: RunBudgetState;
   stepTrace: AgentStepState[];
+  runRequest?: RunRequest;
   contextSnapshot?: AgentContextSnapshot;
   onLLMEvent?: (event: LLMStreamEvent) => void | Promise<void>;
   onTelemetryEvent?: (event: TelemetryEvent) => void | Promise<void>;

@@ -15,6 +15,7 @@ export class Finalizer {
     evaluation: EvaluationResult | undefined;
   }): Promise<string> {
     await this.writeCombinedDiffArtifact();
+    const promptMetadata = await this.readPromptEnvelopeArtifacts();
     const report = [
       `# Run ${input.state.runId}`,
       "",
@@ -29,6 +30,14 @@ export class Finalizer {
       "## Analysis",
       "",
       input.analysis ? JSON.stringify(input.analysis, null, 2) : "Not available.",
+      "",
+      "## Selected Skills",
+      "",
+      input.request.selectedSkills.length > 0 ? JSON.stringify(input.request.selectedSkills, null, 2) : "None.",
+      "",
+      "## Prompt Attestation",
+      "",
+      promptMetadata.length > 0 ? JSON.stringify(promptMetadata, null, 2) : "Not available.",
       "",
       "## Execution",
       "",
@@ -55,5 +64,16 @@ export class Finalizer {
       chunks.push(`# ${file}\n${content}`);
     }
     await this.artifactStore.writeText("diff.patch", chunks.join("\n\n"));
+  }
+
+  private async readPromptEnvelopeArtifacts(): Promise<unknown[]> {
+    const files = await readdir(this.artifactStore.runDirectory);
+    const promptFiles = files.filter((file) => file.startsWith("prompt-envelope-") && file.endsWith(".json")).sort();
+    const values: unknown[] = [];
+    for (const file of promptFiles) {
+      const raw = await readFile(path.join(this.artifactStore.runDirectory, file), "utf8");
+      values.push(JSON.parse(raw));
+    }
+    return values;
   }
 }
