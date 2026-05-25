@@ -24,7 +24,7 @@ import { addMCPServerConfig } from "./mcp/config-manager.js";
 import { buildMCPServerConfig, normalizeMCPAddInput, renderMCPAddResult } from "./mcp/commands.js";
 import { Orchestrator } from "./orchestrator.js";
 import { renderApprovals } from "./rendering/approvals.js";
-import { createLLMStreamRenderer, renderHarnessEvent } from "./rendering/runtime-output.js";
+import { createRuntimeTextRenderer } from "./rendering/runtime-output.js";
 import { renderRunResult } from "./rendering/run-result.js";
 import {
   renderSkillAddResult,
@@ -171,7 +171,7 @@ program
     llmStreamRenderer.finish();
     renderRunResult(
       {
-        writeLine: (line: string) => console.log(line),
+        writeLine: llmStreamRenderer.writeLine,
       },
       result,
       settings.outputFormat,
@@ -217,7 +217,7 @@ program
       signal: AbortSignal.timeout(30_000),
     });
     llmStreamRenderer.finish();
-    render(analysis, settings.outputFormat);
+    renderWithWriter(llmStreamRenderer.writeLine, analysis, settings.outputFormat);
     process.exitCode = 0;
   });
 
@@ -320,7 +320,8 @@ program
     });
     const result = await orchestrator.run(request);
     llmStreamRenderer.finish();
-    render(
+    renderWithWriter(
+      llmStreamRenderer.writeLine,
       {
         runId: result.state.runId,
         status: result.state.status,
@@ -355,7 +356,7 @@ program
     llmStreamRenderer.finish();
     renderRunResult(
       {
-        writeLine: (line: string) => console.log(line),
+        writeLine: llmStreamRenderer.writeLine,
       },
       result,
       settings.outputFormat,
@@ -712,15 +713,19 @@ function collectString(value: string, previous: string[]): string[] {
 }
 
 function render(value: unknown, outputFormat: OutputFormat): void {
+  renderWithWriter((line) => console.log(line), value, outputFormat);
+}
+
+function renderWithWriter(writeLine: (line: string) => void, value: unknown, outputFormat: OutputFormat): void {
   if (outputFormat === "json") {
-    console.log(JSON.stringify(value, null, 2));
+    writeLine(JSON.stringify(value, null, 2));
     return;
   }
   if (typeof value === "string") {
-    console.log(value);
+    writeLine(value);
     return;
   }
-  console.log(JSON.stringify(value, null, 2));
+  writeLine(JSON.stringify(value, null, 2));
 }
 
 function createCLIStreamRenderer(
@@ -732,21 +737,24 @@ function createCLIStreamRenderer(
   onEvent: (event: TelemetryEvent) => void;
   onLLMEvent: (event: LLMStreamEvent) => void;
   hasStreamedAssistantContent: () => boolean;
+  writeLine: (line: string) => void;
   finish: () => void;
 } {
   const writer = {
     write: (text: string) => process.stdout.write(text),
     writeLine: (line: string) => console.log(line),
+    isTTY: () => Boolean(process.stdout.isTTY),
   };
-  const renderer = createLLMStreamRenderer(
+  const renderer = createRuntimeTextRenderer(
     writer,
     outputFormat,
     options,
   );
   return {
-    onEvent: (event) => renderHarnessEvent(writer, outputFormat, event),
+    onEvent: renderer.onEvent,
     onLLMEvent: renderer.onLLMEvent,
     hasStreamedAssistantContent: renderer.hasStreamedAssistantContent,
+    writeLine: renderer.writeLine,
     finish: renderer.finish,
   };
 }

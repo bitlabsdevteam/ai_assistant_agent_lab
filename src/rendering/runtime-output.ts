@@ -4,9 +4,24 @@ import type { OutputFormat, TelemetryEvent } from "../schemas.js";
 export interface TextOutputWriter {
   write(text: string): void;
   writeLine(line: string): void;
+  isTTY?(): boolean;
 }
 
 type TextLLMRenderingMode = "internal" | "assistant";
+
+interface WorkingIndicatorController {
+  noteActivity(): void;
+  noteVisibleOutput(): void;
+  finish(): void;
+}
+
+interface RuntimeTextRendererOptions {
+  textMode?: TextLLMRenderingMode;
+  workingIndicator?: {
+    delayMs?: number;
+    frameIntervalMs?: number;
+  };
+}
 
 interface StreamRendererState {
   buffer: string;
@@ -153,6 +168,53 @@ export function createLLMStreamRenderer(
       for (const role of states.keys()) {
         flushRole(role);
       }
+    },
+  };
+}
+
+export function createRuntimeTextRenderer(
+  writer: TextOutputWriter,
+  outputFormat: OutputFormat,
+  options: RuntimeTextRendererOptions = {},
+): {
+  onEvent: (event: TelemetryEvent) => void;
+  onLLMEvent: (event: LLMStreamEvent) => void;
+  hasStreamedAssistantContent: () => boolean;
+  write(text: string): void;
+  writeLine(line: string): void;
+  finish: () => void;
+} {
+  const workingIndicator = createWorkingIndicatorController(writer, outputFormat, options.workingIndicator);
+  const visibleWriter: TextOutputWriter = {
+    write: (text) => {
+      workingIndicator.noteVisibleOutput();
+      writer.write(text);
+    },
+    writeLine: (line) => {
+      workingIndicator.noteVisibleOutput();
+      writer.writeLine(line);
+    },
+    ...(writer.isTTY ? { isTTY: () => writer.isTTY?.() ?? false } : {}),
+  };
+  const llmRenderer = createLLMStreamRenderer(visibleWriter, outputFormat, {
+    ...(options.textMode ? { textMode: options.textMode } : {}),
+  });
+
+  return {
+    onEvent: (event) => {
+      workingIndicator.noteActivity();
+      renderHarnessEvent(visibleWriter, outputFormat, event);
+    },
+    onLLMEvent: (event) => {
+      workingIndicator.noteActivity();
+      llmRenderer.onLLMEvent(event);
+    },
+    hasStreamedAssistantContent: llmRenderer.hasStreamedAssistantContent,
+    write: visibleWriter.write,
+    writeLine: visibleWriter.writeLine,
+    finish: () => {
+      llmRenderer.finish();
+      workingIndicator.finish();
     },
   };
 }
@@ -502,4 +564,103 @@ function shouldStreamLiveText(buffer: string): boolean {
     return false;
   }
   return !(trimmed.startsWith("{") || trimmed.startsWith("["));
+}
+
+function createWorkingIndicatorController(
+  writer: TextOutputWriter,
+  outputFormat: OutputFormat,
+  options: {
+    delayMs?: number;
+    frameIntervalMs?: number;
+  } = {},
+): WorkingIndicatorController {
+  if (outputFormat === "json") {
+    return createNoopWorkingIndicatorController();
+  }
+
+  const delayMs = options.delayMs ?? 200;
+  const frameIntervalMs = options.frameIntervalMs ?? 350;
+  const frames = ["Working.", "Working..", "Working..."] as const;
+  const interactiveTTY = writer.isTTY?.() ?? false;
+  let activationTimer: ReturnType<typeof setTimeout> | undefined;
+  let frameTimer: ReturnType<typeof setInterval> | undefined;
+  let frameIndex = 0;
+  let visibleOutputStarted = false;
+  let finished = false;
+  let lineVisible = false;
+  let activityObserved = false;
+  let staticLineRendered = false;
+
+  function clearTimers(): void {
+    if (activationTimer) {
+      clearTimeout(activationTimer);
+      activationTimer = undefined;
+    }
+    if (frameTimer) {
+      clearInterval(frameTimer);
+      frameTimer = undefined;
+    }
+  }
+
+  function clearTransientLine(): void {
+    if (!interactiveTTY || !lineVisible) {
+      return;
+    }
+    writer.write("\r\u001b[2K");
+    lineVisible = false;
+  }
+
+  function renderFrame(): void {
+    writer.write(`\r${frames[frameIndex]}`);
+    lineVisible = true;
+    frameIndex = (frameIndex + 1) % frames.length;
+  }
+
+  return {
+    noteActivity: () => {
+      if (finished || visibleOutputStarted || activityObserved) {
+        return;
+      }
+      activityObserved = true;
+      activationTimer = setTimeout(() => {
+        activationTimer = undefined;
+        if (finished || visibleOutputStarted) {
+          return;
+        }
+        if (!interactiveTTY) {
+          if (!staticLineRendered) {
+            writer.writeLine("Working...");
+            staticLineRendered = true;
+          }
+          return;
+        }
+        renderFrame();
+        frameTimer = setInterval(renderFrame, frameIntervalMs);
+      }, delayMs);
+    },
+    noteVisibleOutput: () => {
+      if (finished) {
+        return;
+      }
+      visibleOutputStarted = true;
+      clearTimers();
+      clearTransientLine();
+    },
+    finish: () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimers();
+      clearTransientLine();
+    },
+  };
+}
+
+function createNoopWorkingIndicatorController(): WorkingIndicatorController {
+  return {
+    noteActivity: () => {},
+    noteVisibleOutput: () => {},
+    finish: () => {},
+  };
 }

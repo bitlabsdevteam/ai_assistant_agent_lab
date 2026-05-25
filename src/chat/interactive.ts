@@ -23,7 +23,7 @@ import {
   renderMCPDiscoveryList,
 } from "../mcp/commands.js";
 import { Orchestrator } from "../orchestrator.js";
-import { createLLMStreamRenderer, renderHarnessEvent } from "../rendering/runtime-output.js";
+import { createRuntimeTextRenderer } from "../rendering/runtime-output.js";
 import {
   parseSkillsAddArgv,
   renderSkillAddResult,
@@ -148,6 +148,7 @@ export async function runChatCommand(
       if (input.length === 0) {
         continue;
       }
+      let activeTurnRenderer: ReturnType<typeof createRuntimeTextRenderer> | undefined;
       try {
         const approvalContinuation = await maybeHandleApprovalReply(input, {
           session,
@@ -210,13 +211,14 @@ export async function runChatCommand(
         });
 
         const sessionSettings = resolveInteractiveSettings(baseSettings, interactive);
-        const llmStreamRenderer = createLLMStreamRenderer(consoleAdapter, sessionSettings.outputFormat, {
+        const llmStreamRenderer = createRuntimeTextRenderer(consoleAdapter, sessionSettings.outputFormat, {
           textMode: "assistant",
         });
+        activeTurnRenderer = llmStreamRenderer;
         const orchestrator = createOrchestrator(
           sessionSettings,
           logger,
-          sessionSettings.stream ? (event) => renderHarnessEvent(consoleAdapter, sessionSettings.outputFormat, event) : undefined,
+          sessionSettings.stream ? llmStreamRenderer.onEvent : undefined,
           sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
         );
         const result = await orchestrator.run(prepared.request);
@@ -240,7 +242,7 @@ export async function runChatCommand(
         });
         interactive = await sessionManager.loadInteractiveState(session.sessionId);
         llmStreamRenderer.finish();
-        writeAssistantReply(consoleAdapter, sessionSettings.outputFormat, reply, result.state.runId, {
+        writeAssistantReply(llmStreamRenderer, sessionSettings.outputFormat, reply, result.state.runId, {
           summary: replySummary,
           omitBody: llmStreamRenderer.hasStreamedAssistantContent(),
           streamBody: sessionSettings.stream,
@@ -256,10 +258,11 @@ export async function runChatCommand(
         });
         if (result.state.status === "awaiting_approval" && sessionSettings.outputFormat === "text" && pendingApprovals.length > 1) {
           const pending = pendingApprovals.length > 0 ? pendingApprovals : await sessionManager.listPendingApprovals(session.sessionId);
-          consoleAdapter.writeLine(renderPendingApprovals(pending));
+          llmStreamRenderer.writeLine(renderPendingApprovals(pending));
         }
       } catch (error) {
         const message = formatChatError(error);
+        activeTurnRenderer?.finish();
         if (!input.startsWith("/")) {
           session = await sessionManager.failTurn({
             sessionId: session.sessionId,
@@ -268,7 +271,7 @@ export async function runChatCommand(
           });
           interactive = await sessionManager.loadInteractiveState(session.sessionId);
         }
-        writeChatError(consoleAdapter, baseSettings.outputFormat, message);
+        writeChatError(activeTurnRenderer ?? consoleAdapter, baseSettings.outputFormat, message);
       }
     }
   } finally {
@@ -688,15 +691,13 @@ async function resumeRunInChat(
   turnId: string,
 ): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState }> {
   const sessionSettings = resolveInteractiveSettings(dependencies.settings, dependencies.interactive);
-  const llmStreamRenderer = createLLMStreamRenderer(dependencies.console, sessionSettings.outputFormat, {
+  const llmStreamRenderer = createRuntimeTextRenderer(dependencies.console, sessionSettings.outputFormat, {
     textMode: "assistant",
   });
   const orchestrator = dependencies.createOrchestrator(
     sessionSettings,
     dependencies.logger,
-    sessionSettings.stream
-      ? (event) => renderHarnessEvent(dependencies.console, sessionSettings.outputFormat, event)
-      : undefined,
+    sessionSettings.stream ? llmStreamRenderer.onEvent : undefined,
     sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
   );
   const result = await orchestrator.resume(runId);
@@ -718,20 +719,20 @@ async function resumeRunInChat(
   });
   const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
   llmStreamRenderer.finish();
-  writeAssistantReply(dependencies.console, sessionSettings.outputFormat, reply, result.state.runId, {
+  writeAssistantReply(llmStreamRenderer, sessionSettings.outputFormat, reply, result.state.runId, {
     summary: replySummary,
     omitBody: llmStreamRenderer.hasStreamedAssistantContent(),
     streamBody: sessionSettings.stream,
     suppressWhenOmitted: true,
   });
   if (result.state.status === "awaiting_approval" && sessionSettings.outputFormat === "text" && pendingApprovals.length > 1) {
-    dependencies.console.writeLine(renderPendingApprovals(pendingApprovals));
+    llmStreamRenderer.writeLine(renderPendingApprovals(pendingApprovals));
   }
   return { session, interactive };
 }
 
 function writeAssistantReply(
-  consoleAdapter: ChatConsole,
+  consoleAdapter: Pick<ChatConsole, "write" | "writeLine">,
   outputFormat: OutputFormat,
   reply: string,
   runId: string,
@@ -757,7 +758,7 @@ function writeAssistantReply(
   }
 }
 
-function writeChatError(consoleAdapter: ChatConsole, outputFormat: OutputFormat, message: string): void {
+function writeChatError(consoleAdapter: Pick<ChatConsole, "writeLine">, outputFormat: OutputFormat, message: string): void {
   if (outputFormat === "json") {
     consoleAdapter.writeLine(JSON.stringify({ role: "assistant", error: true, content: message }));
     return;
@@ -845,7 +846,7 @@ function formatChatError(error: unknown): string {
   return "Error [INTERNAL_ERROR]: Unknown chat failure.";
 }
 
-function streamReply(consoleAdapter: ChatConsole, reply: string): void {
+function streamReply(consoleAdapter: Pick<ChatConsole, "write" | "writeLine">, reply: string): void {
   const tokens = reply.match(/\S+\s*/g) ?? [reply];
   for (const token of tokens) {
     consoleAdapter.write(token);

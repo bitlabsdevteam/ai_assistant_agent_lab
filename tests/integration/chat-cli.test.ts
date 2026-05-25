@@ -73,6 +73,62 @@ describe("chat cli", () => {
     expect(console.output.join("\n")).not.toContain("## Analyzer Response");
   });
 
+  it("shows a transient working indicator before streamed assistant output and clears it before the next prompt", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-working-indicator-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings = createSettings(workspace, artifactDir);
+    const console = new FakeConsole(["Say hello", "/exit"]);
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: true,
+      },
+      {
+        console,
+        loadSettings: () => Promise.resolve({ ...settings, stream: true }),
+        createOrchestrator: (_settings, _logger, onEvent, onLLMEvent) =>
+          ({
+            run: () =>
+              new Promise((resolve) => {
+                onEvent?.({
+                  runId: "run-working",
+                  event: "harness.run_started",
+                  status: "success",
+                  timestamp: new Date().toISOString(),
+                });
+                setTimeout(() => {
+                  onLLMEvent?.({
+                    role: "executor",
+                    type: "response.output_text.delta",
+                    delta: '{"stepId":"respond","actionType":"final_response","rationaleSummary":"Reply directly.","finalResponse":"Hello from chat."}',
+                    stepId: "respond",
+                    stepTitle: "Respond",
+                    stepHasTools: false,
+                  });
+                  onLLMEvent?.({
+                    role: "executor",
+                    type: "response.completed",
+                    stepId: "respond",
+                    stepTitle: "Respond",
+                    stepHasTools: false,
+                  });
+                }, 450);
+                setTimeout(() => resolve(createRunResult("run-working", artifactDir, "completed", "Hello from chat.")), 500);
+              }),
+            resume: () => Promise.reject(new Error("resume should not be called")),
+          }) as never,
+      },
+    );
+
+    expect(console.output.some((entry) => entry.includes("Working."))).toBe(true);
+    expect(countOccurrences(console.output.join(""), "Hello from chat.")).toBe(1);
+    expect(console.output.filter((entry) => entry.includes("> ")).every((entry) => !entry.includes("Working"))).toBe(true);
+  }, 10_000);
+
   it("resets into a fresh session and stops reusing prior conversation context", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-reset-"));
     const artifactDir = path.join(workspace, ".runs");
@@ -1236,6 +1292,7 @@ function createRunResult(
   runId: string,
   artifactDir: string,
   status: "completed" | "awaiting_approval",
+  assistantResponse?: string,
 ): {
   state: {
     runId: string;
@@ -1269,7 +1326,17 @@ function createRunResult(
     requiredTools: string[];
     riskLevel: "low";
   };
-  execution: { summary: string; completedSteps: string[]; skippedSteps: string[]; toolCalls: []; changedFiles: []; producedArtifacts: []; blockers: []; needsEvaluation: boolean };
+  execution: {
+    summary: string;
+    completedSteps: string[];
+    skippedSteps: string[];
+    toolCalls: [];
+    changedFiles: [];
+    producedArtifacts: [];
+    blockers: [];
+    needsEvaluation: boolean;
+    assistantResponse?: string;
+  };
   evaluation: { status: "pass"; passedCriteria: []; failedCriteria: []; requiredRevisions: []; validationCommands: []; validationDecisions: []; productionReadinessNotes: [] };
 } {
   return {
@@ -1319,6 +1386,7 @@ function createRunResult(
       producedArtifacts: [],
       blockers: [],
       needsEvaluation: false,
+      ...(assistantResponse ? { assistantResponse } : {}),
     },
     evaluation: {
       status: "pass",
