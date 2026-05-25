@@ -37,18 +37,24 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     const producedArtifacts = new Set(input.priorExecution?.producedArtifacts ?? []);
     const blockers: string[] = [];
     let needsEvaluation = false;
+    let assistantResponse = input.priorExecution?.assistantResponse;
+    let latestObservation = "Starting execution.";
 
     for (const step of input.analysis.plan) {
       if (completedSteps.has(step.id)) {
         continue;
       }
 
-      const outcome = await this.executeStep(step, input.analysis, context);
+      const outcome = await this.executeStep(step, input.analysis, context, latestObservation);
       toolCalls.push(...outcome.records);
       outcome.changedFiles.forEach((file) => changedFiles.add(file));
       outcome.producedArtifacts.forEach((file) => producedArtifacts.add(file));
       blockers.push(...outcome.blockers);
       needsEvaluation = needsEvaluation || outcome.needsEvaluation;
+      if (outcome.assistantResponse) {
+        assistantResponse = outcome.assistantResponse;
+      }
+      latestObservation = outcome.finalObservation;
 
       if (outcome.success) {
         completedSteps.add(step.id);
@@ -72,6 +78,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
       producedArtifacts: [...producedArtifacts],
       blockers,
       needsEvaluation,
+      ...(assistantResponse ? { assistantResponse } : {}),
       summary:
         blockers.length === 0
           ? needsEvaluation
@@ -85,6 +92,7 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     step: PlanStep,
     analysis: AnalysisResult,
     context: AgentRuntimeContext,
+    initialObservation?: string,
   ): Promise<{
     success: boolean;
     records: ToolCallRecord[];
@@ -92,6 +100,8 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     producedArtifacts: string[];
     blockers: string[];
     needsEvaluation: boolean;
+    assistantResponse?: string;
+    finalObservation: string;
   }> {
     const records: ToolCallRecord[] = [];
     const changedFiles: string[] = [];
@@ -102,59 +112,93 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
       objective: `${analysis.objective} :: ${step.title}`,
       remainingSuccessCriteria: [...analysis.successCriteria],
     });
-    let observation = `Starting step '${step.title}'.`;
+    let observation = initialObservation ?? `Starting step '${step.title}'.`;
 
     await this.persistStepMemory(stepMemory, context);
 
     for (let actionIndex = 0; actionIndex < this.maxStepActions; actionIndex += 1) {
-      const action = await this.chooseAction(step, analysis, context, observation, stepMemory);
+      const action =
+        records.length === 0 ? this.buildApprovedReplayAction(step, context, observation) : undefined;
+      const resolvedAction = action ?? (await this.chooseAction(step, analysis, context, observation, stepMemory));
       const trace = {
         stepId: step.id,
-        observation: action.observation,
-        chosenActionType: action.actionType,
+        observation: resolvedAction.observation,
+        chosenActionType: resolvedAction.actionType,
         chosenActionName:
-          action.actionType === "tool_call"
-            ? action.toolName
-            : action.actionType === "patch_proposal"
+          resolvedAction.actionType === "tool_call"
+            ? resolvedAction.toolName
+            : resolvedAction.actionType === "patch_proposal"
               ? PATCH_TOOL_NAME
-              : action.actionType,
-        rationaleSummary: action.rationaleSummary,
+              : resolvedAction.actionType,
+        rationaleSummary: resolvedAction.rationaleSummary,
       } as const;
       context.stepTrace.push(trace);
 
-      if (action.actionType === "clarification") {
-        const message = action.clarificationQuestion;
+      if (resolvedAction.actionType === "clarification") {
+        const message = resolvedAction.clarificationQuestion;
         blockers.push(message);
         stepMemory.blockers.push(message);
         await this.persistStepMemory(stepMemory, context);
-        await this.writeTranscript(context, step, actionIndex, action, { result: message });
+        await this.writeTranscript(context, step, actionIndex, resolvedAction, { result: message });
         const latestTrace = context.stepTrace.at(-1);
         if (latestTrace) {
           latestTrace.resultSummary = message;
         }
-        return { success: false, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+        return {
+          success: false,
+          records,
+          changedFiles,
+          producedArtifacts,
+          blockers,
+          needsEvaluation: false,
+          finalObservation: message,
+        };
       }
 
-      if (action.actionType === "final_response") {
-        await this.writeTranscript(context, step, actionIndex, action, { result: action.finalResponse });
+      if (resolvedAction.actionType === "final_response") {
+        await this.writeTranscript(context, step, actionIndex, resolvedAction, { result: resolvedAction.finalResponse });
         const latestTrace = context.stepTrace.at(-1);
         if (latestTrace) {
-          latestTrace.resultSummary = action.finalResponse;
+          latestTrace.resultSummary = resolvedAction.finalResponse;
         }
-        return { success: true, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+        return {
+          success: true,
+          records,
+          changedFiles,
+          producedArtifacts,
+          blockers,
+          needsEvaluation: false,
+          assistantResponse: resolvedAction.finalResponse,
+          finalObservation: resolvedAction.finalResponse,
+        };
       }
 
-      if (action.actionType === "handoff_to_evaluator") {
-        await this.writeTranscript(context, step, actionIndex, action, { result: action.handoffReason });
+      if (resolvedAction.actionType === "handoff_to_evaluator") {
+        await this.writeTranscript(context, step, actionIndex, resolvedAction, { result: resolvedAction.handoffReason });
         const latestTrace = context.stepTrace.at(-1);
         if (latestTrace) {
-          latestTrace.resultSummary = action.handoffReason;
+          latestTrace.resultSummary = resolvedAction.handoffReason;
         }
-        return { success: true, records, changedFiles, producedArtifacts, blockers, needsEvaluation: true };
+        return {
+          success: true,
+          records,
+          changedFiles,
+          producedArtifacts,
+          blockers,
+          needsEvaluation: true,
+          finalObservation: resolvedAction.handoffReason,
+        };
       }
 
-      if (action.actionType === "patch_proposal") {
-        const outcome = await this.handlePatchProposal(step, action.patch, context, stepMemory, actionIndex, action);
+      if (resolvedAction.actionType === "patch_proposal") {
+        const outcome = await this.handlePatchProposal(
+          step,
+          resolvedAction.patch,
+          context,
+          stepMemory,
+          actionIndex,
+          resolvedAction,
+        );
         records.push(outcome.record);
         producedArtifacts.push(...outcome.producedArtifacts);
         if (outcome.changedFile) {
@@ -168,7 +212,15 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
           if (latestTrace) {
             latestTrace.resultSummary = outcome.blocker;
           }
-          return { success: false, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+          return {
+            success: false,
+            records,
+            changedFiles,
+            producedArtifacts,
+            blockers,
+            needsEvaluation: false,
+            finalObservation: outcome.blocker,
+          };
         }
         observation = outcome.summary;
         const latestTrace = context.stepTrace.at(-1);
@@ -180,16 +232,24 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
         continue;
       }
 
-      const toolName = action.toolName;
+      const toolName = resolvedAction.toolName;
       if (!step.toolNames.includes(toolName)) {
         const blocker = `Executor selected disallowed tool '${toolName}' for step '${step.title}'.`;
         blockers.push(blocker);
         stepMemory.blockers.push(blocker);
         await this.persistStepMemory(stepMemory, context);
-        return { success: false, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+        return {
+          success: false,
+          records,
+          changedFiles,
+          producedArtifacts,
+          blockers,
+          needsEvaluation: false,
+          finalObservation: blocker,
+        };
       }
 
-      const toolInput = await this.buildToolInput(toolName, step, analysis, context, action.toolInput);
+      const toolInput = await this.buildToolInput(toolName, step, analysis, context, resolvedAction.toolInput);
       const outcome = await context.tools.invoke(
         toolName,
         toolInput,
@@ -204,13 +264,14 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
           policy: context.policy,
           approvals: context.approvals,
           ...(context.operatorMode ? { operatorMode: context.operatorMode } : {}),
+          ...(context.onTelemetryEvent ? { onTelemetryEvent: context.onTelemetryEvent } : {}),
         },
         context.artifactStore,
         context.policy,
         { stepId: step.id },
       );
       context.budget.toolCallsUsed += 1;
-      const transcriptArtifact = await this.writeTranscript(context, step, actionIndex, action, {
+      const transcriptArtifact = await this.writeTranscript(context, step, actionIndex, resolvedAction, {
         input: toolInput,
         record: outcome.record,
       });
@@ -249,7 +310,15 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
         if (latestTrace) {
           latestTrace.resultSummary = blocker;
         }
-        return { success: false, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+        return {
+          success: false,
+          records,
+          changedFiles,
+          producedArtifacts,
+          blockers,
+          needsEvaluation: false,
+          finalObservation: blocker,
+        };
       }
       if (outcome.record.status !== "success") {
         const blocker = outcome.record.error ?? `Tool '${toolName}' failed.`;
@@ -260,7 +329,15 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
         if (latestTrace) {
           latestTrace.resultSummary = blocker;
         }
-        return { success: false, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+        return {
+          success: false,
+          records,
+          changedFiles,
+          producedArtifacts,
+          blockers,
+          needsEvaluation: false,
+          finalObservation: blocker,
+        };
       }
       if (toolName === "fs.write") {
         const writeInput = toolInput as { path: string };
@@ -279,7 +356,42 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
     blockers.push(blocker);
     stepMemory.blockers.push(blocker);
     await this.persistStepMemory(stepMemory, context);
-    return { success: false, records, changedFiles, producedArtifacts, blockers, needsEvaluation: false };
+    return {
+      success: false,
+      records,
+      changedFiles,
+      producedArtifacts,
+      blockers,
+      needsEvaluation: false,
+      finalObservation: blocker,
+    };
+  }
+
+  private buildApprovedReplayAction(
+    step: PlanStep,
+    context: AgentRuntimeContext,
+    observation: string,
+  ): ExecutorAction | undefined {
+    const approved = [...context.approvals]
+      .reverse()
+      .find(
+        (approval) =>
+          approval.status === "approved" &&
+          approval.stepId === step.id &&
+          step.toolNames.includes(approval.toolName) &&
+          approval.input !== undefined,
+      );
+    if (!approved) {
+      return undefined;
+    }
+    return ExecutorActionSchema.parse({
+      stepId: step.id,
+      observation,
+      actionType: "tool_call",
+      toolName: approved.toolName,
+      toolInput: toToolInputEntries(normalizeApprovalInput(approved.input)),
+      rationaleSummary: "Replay the exact approved tool input before asking the model to re-plan the step.",
+    });
   }
 
   private async chooseAction(
@@ -301,6 +413,29 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
           stepMemory,
           operatorMode: context.operatorMode ?? "full-auto",
         },
+        ...(context.onLLMEvent
+          ? {
+              stream: {
+                onTextDelta: (delta) =>
+                  context.onLLMEvent?.({
+                    role: "executor",
+                    type: "response.output_text.delta",
+                    delta,
+                    stepId: step.id,
+                    stepTitle: step.title,
+                    stepHasTools: step.toolNames.length > 0,
+                  }),
+                onEvent: (event) =>
+                  context.onLLMEvent?.({
+                    role: "executor",
+                    stepId: step.id,
+                    stepTitle: step.title,
+                    stepHasTools: step.toolNames.length > 0,
+                    ...event,
+                  }),
+              },
+            }
+          : {}),
       },
       ExecutorActionSchema,
     );
@@ -355,6 +490,16 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
         };
       }
       throw new AppError("VALIDATION_ERROR", `No deterministic fs.write mapping exists for step '${step.title}'.`);
+    }
+    if (toolName === "web.search") {
+      return {
+        query: step.description || analysis.objective,
+        maxResults: 5,
+        ...normalizedOverride,
+      };
+    }
+    if (Object.keys(normalizedOverride).length > 0) {
+      return normalizedOverride;
     }
     throw new AppError("VALIDATION_ERROR", `No deterministic tool input builder for ${toolName}.`);
   }
@@ -592,11 +737,11 @@ export class ExecutorAgent implements Agent<ExecutorInput, ExecutionReport> {
 function normalizeToolInputOverride(
   overrideInput?: Extract<ExecutorAction, { actionType: "tool_call" }>["toolInput"],
 ): Record<string, unknown> {
-  if (!overrideInput || Object.keys(overrideInput).length === 0) {
+  if (!overrideInput || overrideInput.length === 0) {
     return {};
   }
   const normalized = Object.fromEntries(
-    Object.entries(overrideInput).map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]),
+    overrideInput.map(({ key, value }) => [key, Array.isArray(value) ? [...value] : value]),
   );
   if ("createDirectories" in normalized) {
     normalized.createDirectories = Boolean(normalized.createDirectories);
@@ -605,6 +750,35 @@ function normalizeToolInputOverride(
     normalized.recursive = Boolean(normalized.recursive);
   }
   return normalized;
+}
+
+function normalizeApprovalInput(input: unknown): Record<string, string | number | boolean | null | Array<string | number | boolean | null>> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  const normalized: Record<string, string | number | boolean | null | Array<string | number | boolean | null>> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null ||
+      (Array.isArray(value) &&
+        value.every(
+          (entry) =>
+            typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean" || entry === null,
+        ))
+    ) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+function toToolInputEntries(
+  input: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>,
+): Array<{ key: string; value: string | number | boolean | null | Array<string | number | boolean | null> }> {
+  return Object.entries(input).map(([key, value]) => ({ key, value }));
 }
 
 function resolveTarget(workingDirectory: string, targetPath: string): string {

@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   AnalysisResultSchema,
   ChatSessionStateSchema,
   ChatTurnRecordSchema,
+  ExecutorActionSchema,
   HarnessRunStateSchema,
   InteractiveSessionStateSchema,
   RunBudgetStateSchema,
   RunRequestSchema,
 } from "../../src/schemas.js";
+import { zodToJsonSchema } from "../../src/llm/json-schema.js";
 
 describe("schemas", () => {
   it("applies run request defaults", () => {
@@ -98,5 +101,64 @@ describe("schemas", () => {
 
     expect(state.mode).toBe("suggest");
     expect(state.selectedModel).toBe("gpt-5");
+  });
+
+  it("converts object schemas for OpenAI strict structured outputs", () => {
+    const schema = z.object({
+      requiredWithDefault: z.boolean().default(false),
+      optionalText: z.string().optional(),
+    });
+
+    expect(zodToJsonSchema(schema, "strict_test")).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      title: "strict_test",
+      type: "object",
+      properties: {
+        requiredWithDefault: {
+          type: "boolean",
+        },
+        optionalText: {
+          anyOf: [{ type: "string" }, { type: "null" }],
+        },
+      },
+      required: ["requiredWithDefault", "optionalText"],
+      additionalProperties: false,
+    });
+  });
+
+  it("converts executor action discriminated unions for OpenAI structured outputs", () => {
+    expect(zodToJsonSchema(ExecutorActionSchema, "executor_action")).toMatchObject({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      title: "executor_action",
+      anyOf: expect.arrayContaining([
+        expect.objectContaining({
+          type: "object",
+          properties: expect.objectContaining({
+            actionType: {
+              type: "string",
+              const: "tool_call",
+            },
+            toolInput: {
+              type: "array",
+              items: expect.objectContaining({
+                type: "object",
+                properties: expect.objectContaining({
+                  key: { type: "string", minLength: 1 },
+                }),
+              }),
+            },
+          }),
+        }),
+        expect.objectContaining({
+          type: "object",
+          properties: expect.objectContaining({
+            actionType: {
+              type: "string",
+              const: "patch_proposal",
+            },
+          }),
+        }),
+      ]),
+    });
   });
 });

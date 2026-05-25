@@ -4,7 +4,7 @@ import type { ArtifactStore } from "../memory/artifact-store.js";
 import type { PermissionPolicy } from "../policy/permissions.js";
 import type { ApprovalManager } from "../harness/approvals.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { LLMClient } from "../llm/client.js";
+import type { LLMClient, LLMStreamEvent } from "../llm/client.js";
 import type {
   AgentContextSnapshot,
   AgentStepState,
@@ -13,6 +13,7 @@ import type {
   PermissionScope,
   RunBudgetState,
   Settings,
+  TelemetryEvent,
 } from "../schemas.js";
 
 export interface AgentRuntimeContext {
@@ -32,6 +33,8 @@ export interface AgentRuntimeContext {
   budget: RunBudgetState;
   stepTrace: AgentStepState[];
   contextSnapshot?: AgentContextSnapshot;
+  onLLMEvent?: (event: LLMStreamEvent) => void | Promise<void>;
+  onTelemetryEvent?: (event: TelemetryEvent) => void | Promise<void>;
   signal: AbortSignal;
 }
 

@@ -23,6 +23,8 @@ function toJsonSchema(schema: z.ZodTypeAny): JsonSchema {
       return numberSchema(unwrapped as z.ZodNumber);
     case z.ZodFirstPartyTypeKind.ZodBoolean:
       return { type: "boolean" };
+    case z.ZodFirstPartyTypeKind.ZodNull:
+      return { type: "null" };
     case z.ZodFirstPartyTypeKind.ZodEnum:
       return { type: "string", enum: (unwrapped as z.ZodEnum<[string, ...string[]]>)._def.values };
     case z.ZodFirstPartyTypeKind.ZodLiteral:
@@ -33,6 +35,10 @@ function toJsonSchema(schema: z.ZodTypeAny): JsonSchema {
       return objectSchema(unwrapped as z.ZodObject<z.ZodRawShape>);
     case z.ZodFirstPartyTypeKind.ZodUnion:
       return unionSchema(unwrapped as z.ZodUnion<[z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]>);
+    case z.ZodFirstPartyTypeKind.ZodDiscriminatedUnion:
+      return discriminatedUnionSchema(unwrapped as z.ZodDiscriminatedUnion<string, [z.ZodDiscriminatedUnionOption<string>, ...z.ZodDiscriminatedUnionOption<string>[]]>);
+    case z.ZodFirstPartyTypeKind.ZodRecord:
+      return recordSchema(unwrapped as z.ZodRecord<z.ZodString, z.ZodTypeAny>);
     case z.ZodFirstPartyTypeKind.ZodNullable:
       return {
         anyOf: [toJsonSchema((unwrapped as z.ZodNullable<z.ZodTypeAny>).unwrap()), { type: "null" }],
@@ -45,13 +51,10 @@ function toJsonSchema(schema: z.ZodTypeAny): JsonSchema {
 function objectSchema(schema: z.ZodObject<z.ZodRawShape>): JsonSchema {
   const shape = schema._def.shape();
   const properties: Record<string, unknown> = {};
-  const required: string[] = [];
+  const required = Object.keys(shape);
 
   for (const [key, value] of Object.entries(shape)) {
-    properties[key] = toJsonSchema(value);
-    if (!isOptionalLike(value)) {
-      required.push(key);
-    }
+    properties[key] = propertySchema(value);
   }
 
   return {
@@ -60,6 +63,15 @@ function objectSchema(schema: z.ZodObject<z.ZodRawShape>): JsonSchema {
     required,
     additionalProperties: false,
   };
+}
+
+function propertySchema(schema: z.ZodTypeAny): JsonSchema {
+  if (isOptional(schema)) {
+    return {
+      anyOf: [toJsonSchema(schema), { type: "null" }],
+    };
+  }
+  return toJsonSchema(schema);
 }
 
 function arraySchema(schema: z.ZodArray<z.ZodTypeAny>): JsonSchema {
@@ -74,6 +86,24 @@ function arraySchema(schema: z.ZodArray<z.ZodTypeAny>): JsonSchema {
 function unionSchema(schema: z.ZodUnion<[z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]>): JsonSchema {
   return {
     anyOf: schema._def.options.map((option) => toJsonSchema(option)),
+  };
+}
+
+function discriminatedUnionSchema(
+  schema: z.ZodDiscriminatedUnion<
+    string,
+    [z.ZodDiscriminatedUnionOption<string>, ...z.ZodDiscriminatedUnionOption<string>[]]
+  >,
+): JsonSchema {
+  return {
+    anyOf: [...schema.options.values()].map((option) => toJsonSchema(option)),
+  };
+}
+
+function recordSchema(schema: z.ZodRecord<z.ZodString, z.ZodTypeAny>): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: toJsonSchema(schema._def.valueType),
   };
 }
 
@@ -145,9 +175,9 @@ function unwrap(schema: z.ZodTypeAny): z.ZodTypeAny {
   }
 }
 
-function isOptionalLike(schema: z.ZodTypeAny): boolean {
+function isOptional(schema: z.ZodTypeAny): boolean {
   const typeName = getTypeName(schema);
-  return typeName === z.ZodFirstPartyTypeKind.ZodOptional || typeName === z.ZodFirstPartyTypeKind.ZodDefault;
+  return typeName === z.ZodFirstPartyTypeKind.ZodOptional;
 }
 
 function getTypeName(schema: z.ZodTypeAny): z.ZodFirstPartyTypeKind {

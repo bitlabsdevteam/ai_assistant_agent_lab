@@ -66,6 +66,11 @@ export class PermissionPolicy {
       };
     }
 
+    const networkDecision = this.decideNetworkAccess(tool, input, approvalMode, approvals);
+    if (networkDecision) {
+      return networkDecision;
+    }
+
     if (approvalMode === "never" && (riskLevel === "high" || requiresApproval)) {
       return {
         outcome: "deny",
@@ -129,14 +134,73 @@ export class PermissionPolicy {
     }
   }
 
-  public ensureNetworkAllowed(urlString: string): void {
+  public ensureNetworkAllowed(
+    urlString: string,
+    options?: {
+      toolName?: string;
+      input?: unknown;
+      approvals?: ApprovalRequest[];
+    },
+  ): void {
     const url = new URL(urlString);
-    if (this.settings.networkAllowlist.length === 0) {
-      throw new AppError("POLICY_ERROR", "Network access is disabled.");
+    if (this.settings.networkAllowlist.includes(url.hostname)) {
+      return;
     }
-    if (!this.settings.networkAllowlist.includes(url.hostname)) {
-      throw new AppError("POLICY_ERROR", `Network target is not allowlisted: ${url.hostname}`);
+    if (options?.toolName && this.hasApprovedNetworkAccess(options.toolName, options.input, options.approvals)) {
+      return;
     }
+    throw new AppError(
+      "POLICY_ERROR",
+      this.settings.networkAllowlist.length === 0
+        ? "Network access is disabled."
+        : `Network target is not allowlisted: ${url.hostname}`,
+    );
+  }
+
+  private decideNetworkAccess(
+    tool: ToolDescriptor,
+    input: unknown,
+    approvalMode: ApprovalMode,
+    approvals: ApprovalRequest[],
+  ): PolicyDecision | undefined {
+    const target = getNetworkTarget(tool.name, input);
+    if (!target) {
+      return undefined;
+    }
+    const url = new URL(target);
+    if (this.settings.networkAllowlist.includes(url.hostname)) {
+      return undefined;
+    }
+    if (this.hasApprovedNetworkAccess(tool.name, input, approvals)) {
+      return {
+        outcome: "allow",
+        reason: `Network target '${url.hostname}' allowed by recorded approval.`,
+        riskLevel: "high",
+      };
+    }
+    if (approvalMode === "never") {
+      return {
+        outcome: "deny",
+        reason: this.settings.networkAllowlist.length === 0
+          ? "Approval mode forbids network access because network access is disabled."
+          : `Approval mode forbids network access to non-allowlisted host '${url.hostname}'.`,
+        riskLevel: "high",
+      };
+    }
+    return {
+      outcome: "require_approval",
+      reason: this.settings.networkAllowlist.length === 0
+        ? `Network access to '${url.hostname}' requires approval because network access is disabled by default.`
+        : `Network target '${url.hostname}' requires approval because it is not allowlisted.`,
+      riskLevel: "high",
+    };
+  }
+
+  private hasApprovedNetworkAccess(toolName: string, input: unknown, approvals: ApprovalRequest[] = []): boolean {
+    const digest = createApprovalInputDigest(input);
+    return approvals.some(
+      (approval) => approval.status === "approved" && approval.toolName === toolName && approval.inputDigest === digest,
+    );
   }
 }
 
@@ -173,10 +237,22 @@ export function buildApprovalRequest(
     riskLevel,
     actionSummary,
     inputDigest: createApprovalInputDigest(input),
+    input,
     ...(options?.target ? { target: options.target } : {}),
   };
 }
 
 export function createApprovalInputDigest(input: unknown): string {
   return JSON.stringify(input);
+}
+
+function getNetworkTarget(toolName: string, input: unknown): string | undefined {
+  if (toolName === "web.search") {
+    return "https://api.perplexity.ai/search";
+  }
+  if (toolName === "web.fetch") {
+    const parsed = input as { url?: unknown };
+    return typeof parsed.url === "string" ? parsed.url : undefined;
+  }
+  return undefined;
 }

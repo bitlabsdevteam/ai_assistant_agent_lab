@@ -18,17 +18,20 @@ pnpm build
 
 ## LLM Providers
 
-The runtime supports:
-
-- `mock`: offline deterministic behavior for local development and tests
-- `openai`: real OpenAI Responses API integration with structured JSON output
+The runtime uses the OpenAI Responses API with structured JSON output validated against the runtime's Zod schemas.
 
 Minimal OpenAI configuration:
 
 ```bash
 export LITTLE_HELPER_LLM_PROVIDER=openai
-export LITTLE_HELPER_LLM_MODEL=gpt-4.1-mini
+export LITTLE_HELPER_LLM_MODEL=gpt-5.4
 export OPENAI_API_KEY=...
+```
+
+Perplexity-backed web search tool configuration:
+
+```bash
+export PERPLEXITY_API_KEY=...
 ```
 
 Optional settings:
@@ -37,22 +40,24 @@ Optional settings:
 - `LITTLE_HELPER_LLM_ORGANIZATION`
 - `LITTLE_HELPER_LLM_PROJECT`
 
+To allow the built-in `web.search` tool, add `api.perplexity.ai` to `networkAllowlist`.
+
 `little-helper doctor` now checks configured OpenAI reachability with the selected model when `llmProvider=openai`.
 
 Role-specific routing can be configured in `.little-helper.config.json`:
 
 ```json
 {
-  "llmProvider": "mock",
-  "llmModel": "mock-default",
+  "llmProvider": "openai",
+  "llmModel": "gpt-5.4",
   "llmRouting": {
     "analyzer": {
       "provider": "openai",
-      "model": "gpt-4.1-mini"
+      "model": "gpt-5.4"
     },
     "evaluator": {
       "provider": "openai",
-      "model": "gpt-4.1"
+      "model": "gpt-5.4-mini"
     }
   }
 }

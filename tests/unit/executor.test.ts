@@ -7,19 +7,19 @@ import { describe, expect, it } from "vitest";
 import { ExecutorAgent } from "../../src/agents/executor.js";
 import { ApprovalManager } from "../../src/harness/approvals.js";
 import { createLogger } from "../../src/logger.js";
-import { createLLMClient } from "../../src/llm/providers.js";
 import { ArtifactStore } from "../../src/memory/artifact-store.js";
 import { PermissionPolicy } from "../../src/policy/permissions.js";
 import type { AnalysisResult, Settings } from "../../src/schemas.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
+import { DeterministicTestLLMClient } from "../helpers/fake-llm.js";
 
 function createSettings(workspace: string): Settings {
   return {
     env: "development",
     logLevel: "info",
     artifactDir: path.join(workspace, ".runs"),
-    llmProvider: "mock",
-    llmModel: "mock-default",
+    llmProvider: "openai",
+    llmModel: "gpt-5.4",
     llmRouting: {},
     maxIterations: 2,
     approvalMode: "on-risk",
@@ -88,7 +88,7 @@ describe("ExecutorAgent", () => {
         settings,
         permissions: ["workspace", "shell"],
         dryRun: false,
-        llm: createLLMClient(settings),
+        llm: new DeterministicTestLLMClient(),
         tools: await ToolRegistry.create(settings),
         policy: new PermissionPolicy(settings),
         approvalManager: new ApprovalManager(artifactStore),
@@ -162,7 +162,7 @@ describe("ExecutorAgent", () => {
         settings,
         permissions: ["workspace", "shell"],
         dryRun: false,
-        llm: createLLMClient(settings),
+        llm: new DeterministicTestLLMClient(),
         tools: await ToolRegistry.create(settings),
         policy: new PermissionPolicy(settings),
         approvalManager: new ApprovalManager(artifactStore),
@@ -218,7 +218,7 @@ describe("ExecutorAgent", () => {
         settings,
         permissions: ["workspace", "shell"],
         dryRun: false,
-        llm: createLLMClient(settings),
+        llm: new DeterministicTestLLMClient(),
         tools: await ToolRegistry.create(settings),
         policy: new PermissionPolicy(settings),
         approvalManager: new ApprovalManager(artifactStore),

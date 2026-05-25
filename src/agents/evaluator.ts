@@ -42,7 +42,7 @@ export class EvaluatorAgent
       requiredRevisions.push(...input.execution.blockers);
     }
 
-    const validationPlan = await this.resolveValidationPlan(context);
+    const validationPlan = await this.resolveValidationPlan(input, context, failedCriteria.length === 0);
     productionReadinessNotes.push(...validationPlan.notes);
     validationDecisions.push(...validationPlan.skipped);
 
@@ -136,7 +136,11 @@ export class EvaluatorAgent
     return context.stepTrace.length > 0;
   }
 
-  private async resolveValidationPlan(context: AgentRuntimeContext): Promise<{
+  private async resolveValidationPlan(
+    input: { analysis: AnalysisResult; execution: ExecutionReport },
+    context: AgentRuntimeContext,
+    criteriaSatisfied: boolean,
+  ): Promise<{
     commands: Array<{
       command: string[];
       source: "configured" | "auto";
@@ -159,6 +163,22 @@ export class EvaluatorAgent
 
     const skipped: EvaluationResult["validationDecisions"] = [];
     const notes: string[] = [];
+    if (this.shouldSkipAutoValidation(input, context, criteriaSatisfied)) {
+      const reason = "No workspace mutation or validation-worthy action performed.";
+      skipped.push({
+        command: ["auto-validation"],
+        source: "auto",
+        status: "skipped",
+        reason,
+      });
+      notes.push(reason);
+      return {
+        commands: [],
+        skipped,
+        notes,
+      };
+    }
+
     const packageJson = await this.readPackageJson(context.workingDirectory);
     if (!packageJson || !hasTestScript(packageJson)) {
       return {
@@ -204,6 +224,29 @@ export class EvaluatorAgent
       skipped,
       notes,
     };
+  }
+
+  private shouldSkipAutoValidation(
+    input: { analysis: AnalysisResult; execution: ExecutionReport },
+    context: AgentRuntimeContext,
+    criteriaSatisfied: boolean,
+  ): boolean {
+    if (!criteriaSatisfied) {
+      return false;
+    }
+    if (input.execution.changedFiles.length > 0) {
+      return false;
+    }
+    if (input.execution.blockers.length > 0) {
+      return false;
+    }
+    if (input.execution.needsEvaluation) {
+      return false;
+    }
+    if (hasSideEffectingToolCall(input.execution)) {
+      return false;
+    }
+    return context.stepTrace.at(-1)?.chosenActionType === "final_response";
   }
 
   private async readPackageJson(workingDirectory: string): Promise<NodePackageJson | undefined> {
@@ -254,4 +297,22 @@ async function pathExists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function hasSideEffectingToolCall(execution: ExecutionReport): boolean {
+  return execution.toolCalls.some((record) => {
+    if (record.status !== "success") {
+      return false;
+    }
+    if (record.category === undefined) {
+      return true;
+    }
+    return (
+      record.category === "edit" ||
+      record.category === "execution" ||
+      record.category === "network" ||
+      record.category === "validation" ||
+      record.category === "mcp"
+    );
+  });
 }

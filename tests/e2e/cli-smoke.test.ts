@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import { createLLMClient } from "../../src/llm/providers.js";
 
 describe("cli smoke prerequisites", () => {
-  it("has a functioning mock llm provider for offline runs", async () => {
+  it("defaults to the OpenAI provider and reports missing credentials clearly", async () => {
     const client = createLLMClient({
       env: "development",
       logLevel: "info",
       artifactDir: ".little-helper/runs",
-      llmProvider: "mock",
-      llmModel: "mock-default",
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
       llmRouting: {},
       maxIterations: 1,
       approvalMode: "on-risk",
@@ -25,8 +25,8 @@ describe("cli smoke prerequisites", () => {
     });
 
     await expect(client.healthCheck()).resolves.toEqual({
-      ok: true,
-      message: "Mock LLM provider is ready.",
+      ok: false,
+      message: "OPENAI_API_KEY is not configured.",
     });
   });
 });

@@ -13,13 +13,12 @@ const testEnvWithApproval: NodeJS.ProcessEnv = {
 
 const testProdEnv: NodeJS.ProcessEnv = {
   LITTLE_HELPER_ENV: "production",
-  LITTLE_HELPER_LLM_PROVIDER: "mock",
 };
 
 const testProdOpenAIEnvMissingKey: NodeJS.ProcessEnv = {
   LITTLE_HELPER_ENV: "production",
   LITTLE_HELPER_LLM_PROVIDER: "openai",
-  LITTLE_HELPER_LLM_MODEL: "gpt-4.1-mini",
+  LITTLE_HELPER_LLM_MODEL: "gpt-5.4",
 };
 
 describe("loadSettings", () => {
@@ -33,7 +32,7 @@ describe("loadSettings", () => {
         llmRouting: {
           evaluator: {
             provider: "openai",
-            model: "gpt-4.1-mini",
+            model: "gpt-5.4-mini",
             baseUrl: "https://example.test/v1",
           },
         },
@@ -51,11 +50,13 @@ describe("loadSettings", () => {
     expect(settings.approvalMode).toBe("on-risk");
     expect(settings.outputFormat).toBe("json");
     expect(settings.allowedRoots).toContain(workspace);
+    expect(settings.llmProvider).toBe("openai");
+    expect(settings.llmModel).toBe("gpt-5.4");
     expect(settings.llmRouting.evaluator?.provider).toBe("openai");
-    expect(settings.llmRouting.evaluator?.model).toBe("gpt-4.1-mini");
+    expect(settings.llmRouting.evaluator?.model).toBe("gpt-5.4-mini");
   });
 
-  it("rejects unsafe production defaults", async () => {
+  it("rejects production defaults without OPENAI_API_KEY", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-prod-"));
 
     await expect(
@@ -79,17 +80,41 @@ describe("loadSettings", () => {
     ).rejects.toBeInstanceOf(AppError);
   });
 
-  it("rejects production mock role overrides even when global provider is real", async () => {
+  it("loads environment settings and secrets from the workspace .env file", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-dotenv-"));
+    await writeFile(
+      path.join(workspace, ".env"),
+      ["OPENAI_API_KEY=test-key", "LITTLE_HELPER_LLM_MODEL=gpt-5.4-mini", "LITTLE_HELPER_APPROVAL_MODE=never"].join(
+        "\n",
+      ),
+      "utf8",
+    );
+
+    await expect(
+      loadSettings(
+        workspace,
+        {},
+        {
+          LITTLE_HELPER_ENV: "production",
+        },
+      ),
+    ).resolves.toMatchObject({
+      llmModel: "gpt-5.4-mini",
+      approvalMode: "never",
+    });
+  });
+
+  it("rejects unsupported provider role overrides even when global provider is OpenAI", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-prod-routing-"));
     await writeFile(
       path.join(workspace, ".little-helper.config.json"),
       JSON.stringify({
         llmProvider: "openai",
-        llmModel: "gpt-4.1-mini",
+        llmModel: "gpt-5.4",
         llmRouting: {
           evaluator: {
-            provider: "mock",
-            model: "mock-default",
+            provider: "legacy",
+            model: "legacy-default",
           },
         },
       }),

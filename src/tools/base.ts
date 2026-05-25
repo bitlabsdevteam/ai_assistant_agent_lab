@@ -8,6 +8,7 @@ import type {
   PermissionScope,
   Settings,
   TerminalSessionState,
+  TelemetryEvent,
   ToolCategory,
   ToolDescriptor,
 } from "../schemas.js";
@@ -25,6 +26,7 @@ export interface ToolContext {
   policy: PermissionPolicy;
   approvals: ApprovalRequest[];
   operatorMode?: OperatorMode;
+  onTelemetryEvent?: (event: TelemetryEvent) => void | Promise<void>;
 }
 
 export interface Tool<TInput extends AnySchema, TOutput extends AnySchema> {

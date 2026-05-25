@@ -1,8 +1,8 @@
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApprovalManager } from "../../src/harness/approvals.js";
 import { createLogger } from "../../src/logger.js";
@@ -10,6 +10,12 @@ import { RunStore } from "../../src/memory/run-store.js";
 import { SessionStore } from "../../src/memory/session-store.js";
 import { Orchestrator } from "../../src/orchestrator.js";
 import type { Settings } from "../../src/schemas.js";
+import { DeterministicTestLLMClient } from "../helpers/fake-llm.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("orchestrator", () => {
   it("runs analyzer, executor, evaluator and writes artifacts", async () => {
@@ -19,8 +25,8 @@ describe("orchestrator", () => {
       env: "development",
       logLevel: "info",
       artifactDir,
-      llmProvider: "mock",
-      llmModel: "mock-default",
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
       llmRouting: {},
       maxIterations: 2,
       approvalMode: "on-risk",
@@ -35,7 +41,9 @@ describe("orchestrator", () => {
       mcpServers: [],
     };
 
-    const orchestrator = new Orchestrator(settings, createLogger(settings));
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+    });
     const result = await orchestrator.run({
       task: "Create file hello.txt with content hello world",
       workingDirectory: workspace,
@@ -68,8 +76,8 @@ describe("orchestrator", () => {
       env: "development",
       logLevel: "info",
       artifactDir,
-      llmProvider: "mock",
-      llmModel: "mock-default",
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
       llmRouting: {},
       maxIterations: 2,
       approvalMode: "always",
@@ -84,7 +92,9 @@ describe("orchestrator", () => {
       mcpServers: [],
     };
 
-    const orchestrator = new Orchestrator(settings, createLogger(settings));
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+    });
     const initial = await orchestrator.run({
       task: "Create file gated.txt with content gated hello",
       workingDirectory: workspace,
@@ -120,8 +130,8 @@ describe("orchestrator", () => {
       env: "development",
       logLevel: "info",
       artifactDir,
-      llmProvider: "mock",
-      llmModel: "mock-default",
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
       llmRouting: {},
       maxIterations: 2,
       approvalMode: "on-risk",
@@ -136,7 +146,9 @@ describe("orchestrator", () => {
       mcpServers: [],
     };
 
-    const orchestrator = new Orchestrator(settings, createLogger(settings));
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+    });
     await orchestrator.run({
       task: "Create file session.txt with content sessions",
       workingDirectory: workspace,
@@ -153,5 +165,139 @@ describe("orchestrator", () => {
 
     expect(sessions.some((session) => session.mode === "non_interactive")).toBe(true);
     expect(sessions.every((session) => session.status !== "running")).toBe(true);
+  });
+
+  it("emits typed LLM stream events through the orchestrator callback", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-stream-events-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings: Settings = {
+      env: "development",
+      logLevel: "info",
+      artifactDir,
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
+      llmRouting: {},
+      maxIterations: 2,
+      approvalMode: "on-risk",
+      outputFormat: "json",
+      stream: true,
+      maxToolOutputChars: 8_000,
+      commandTimeoutMs: 30_000,
+      shellAllowlist: ["node", "pnpm", "git"],
+      validationCommands: [],
+      allowedRoots: [workspace],
+      networkAllowlist: [],
+      mcpServers: [],
+    };
+
+    const events: Array<{ role: string; type: string; delta?: string }> = [];
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+      onLLMEvent: (event) => {
+        events.push({
+          role: event.role,
+          type: event.type,
+          ...(typeof event.delta === "string" ? { delta: event.delta } : {}),
+        });
+      },
+    });
+
+    await orchestrator.run({
+      task: "Create file hello.txt with content hello world",
+      workingDirectory: workspace,
+      profile: "default",
+      dryRun: false,
+      maxIterations: 2,
+      metadata: {},
+    });
+
+    expect(events.some((event) => event.role === "analyzer" && event.type === "response.output_text.delta")).toBe(true);
+    expect(events.some((event) => event.role === "executor" && event.type === "response.output_text.delta")).toBe(true);
+  });
+
+  it("requests approval for non-allowlisted web.search and resumes successfully after approval", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-weather-approval-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings: Settings = {
+      env: "development",
+      logLevel: "info",
+      artifactDir,
+      llmProvider: "openai",
+      llmModel: "gpt-5.4",
+      llmRouting: {},
+      maxIterations: 2,
+      approvalMode: "on-risk",
+      outputFormat: "json",
+      stream: true,
+      maxToolOutputChars: 8_000,
+      commandTimeoutMs: 30_000,
+      shellAllowlist: ["node", "pnpm", "git"],
+      validationCommands: [],
+      allowedRoots: [workspace],
+      networkAllowlist: [],
+      mcpServers: [],
+    };
+
+    const envText = await readFile(path.join(process.cwd(), ".env"), "utf8");
+    const keyMatch = envText.match(/^PERPLEXITY_API_KEY=(.+)$/m);
+    expect(keyMatch?.[1]).toBeTruthy();
+    await writeFile(path.join(workspace, ".env"), `PERPLEXITY_API_KEY=${keyMatch![1]}\n`, "utf8");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              search_id: "search-weather-approval",
+              results: [
+                {
+                  title: "Tokyo weather",
+                  url: "https://example.com/tokyo-weather",
+                  snippet: "Tokyo is 24C with light rain.",
+                  date: "2026-05-25",
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+        ),
+      ),
+    );
+
+    const orchestrator = new Orchestrator(settings, createLogger(settings), {
+      llm: new DeterministicTestLLMClient(),
+    });
+    const initial = await orchestrator.run({
+      task: "what is the weather in Tokyo?",
+      workingDirectory: workspace,
+      profile: "default",
+      dryRun: false,
+      maxIterations: 2,
+      metadata: {},
+    });
+
+    expect(initial.state.status).toBe("awaiting_approval");
+
+    const runStore = new RunStore(artifactDir);
+    const runs = await runStore.listRuns();
+    expect(runs).toHaveLength(1);
+    const runId = runs[0] as string;
+    const artifactStore = runStore.createArtifactStore(runId);
+    const approvalManager = new ApprovalManager(artifactStore);
+    const approvals = await approvalManager.load();
+
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]?.toolName).toBe("web.search");
+    expect(approvals[0]?.reason).toMatch(/requires approval/i);
+
+    await approvalManager.decide(approvals[0]!.id, "approved");
+    const resumed = await orchestrator.resume(runId);
+
+    expect(resumed.state.status).toBe("completed");
+    expect(resumed.execution?.toolCalls.some((record) => record.toolName === "web.search" && record.status === "success")).toBe(true);
   });
 });

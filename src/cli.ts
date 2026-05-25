@@ -6,7 +6,10 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { loadSettings } from "./config.js";
+import { handleApprovalsFlow } from "./commands/approvals-command.js";
+import { applyWorkspaceEnvToProcess } from "./env.js";
 import { AppError } from "./errors.js";
+import type { LLMStreamEvent } from "./llm/client.js";
 import { createLLMClient } from "./llm/providers.js";
 import { AnalyzerAgent } from "./agents/analyzer.js";
 import { runChatCommand, type ChatCommandOptions as InteractiveChatCommandOptions } from "./chat/interactive.js";
@@ -18,8 +21,11 @@ import { PermissionPolicy } from "./policy/permissions.js";
 import { createLogger } from "./logger.js";
 import { MCPClient } from "./mcp/client.js";
 import { Orchestrator } from "./orchestrator.js";
+import { renderApprovals } from "./rendering/approvals.js";
+import { createLLMStreamRenderer, renderHarnessEvent } from "./rendering/runtime-output.js";
+import { renderRunResult } from "./rendering/run-result.js";
 import { ToolRegistry } from "./tools/registry.js";
-import { RunBudgetStateSchema, RunRequestSchema, type OutputFormat, type Settings } from "./schemas.js";
+import { RunBudgetStateSchema, RunRequestSchema, type OutputFormat, type Settings, type TelemetryEvent } from "./schemas.js";
 
 const program = new Command();
 
@@ -42,6 +48,12 @@ interface RunCommandOptions extends BaseOptions {
 type PlanCommandOptions = BaseOptions;
 type RunIdCommandOptions = BaseOptions;
 type DoctorCommandOptions = BaseOptions;
+interface ApprovalsCommandOptions extends RunIdCommandOptions {
+  approve?: string;
+  deny?: string;
+  resume?: boolean;
+  stream?: boolean;
+}
 interface SessionCommandOptions extends RunIdCommandOptions {
   inspect?: string;
   cancel?: string;
@@ -105,7 +117,17 @@ program
   .action(async (task: string, options: RunCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, options);
     const logger = createLogger(settings);
-    const orchestrator = new Orchestrator(settings, logger);
+    const llmStreamRenderer = createCLIStreamRenderer(settings.outputFormat, { textMode: "assistant" });
+    const orchestrator = new Orchestrator(
+      settings,
+      logger,
+      settings.stream
+        ? {
+            onEvent: llmStreamRenderer.onEvent,
+            onLLMEvent: llmStreamRenderer.onLLMEvent,
+          }
+        : {},
+    );
     const request = RunRequestSchema.parse({
       task,
       workingDirectory: path.resolve(options.cwd),
@@ -115,7 +137,17 @@ program
       metadata: {},
     });
     const result = await orchestrator.run(request);
-    render(result, settings.outputFormat);
+    llmStreamRenderer.finish();
+    renderRunResult(
+      {
+        writeLine: (line: string) => console.log(line),
+      },
+      result,
+      settings.outputFormat,
+      {
+        omitAssistantReply: llmStreamRenderer.hasStreamedAssistantContent(),
+      },
+    );
     process.exitCode = result.state.status === "completed" ? 0 : 1;
   });
 
@@ -126,6 +158,7 @@ program
   .option("--output <format>", "text or json", "text")
   .action(async (task: string, options: PlanCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, { ...options, stream: false });
+    const llmStreamRenderer = createCLIStreamRenderer(settings.outputFormat);
     const request = RunRequestSchema.parse({
       task,
       workingDirectory: path.resolve(options.cwd),
@@ -149,8 +182,10 @@ program
       logger: createLogger(settings),
       budget: RunBudgetStateSchema.parse({ maxIterations: 1 }),
       stepTrace: [],
+      ...(settings.stream ? { onLLMEvent: llmStreamRenderer.onLLMEvent } : {}),
       signal: AbortSignal.timeout(30_000),
     });
+    llmStreamRenderer.finish();
     render(analysis, settings.outputFormat);
     process.exitCode = 0;
   });
@@ -233,7 +268,17 @@ program
       return;
     }
     const logger = createLogger(settings);
-    const orchestrator = new Orchestrator(settings, logger);
+    const llmStreamRenderer = createCLIStreamRenderer(settings.outputFormat);
+    const orchestrator = new Orchestrator(
+      settings,
+      logger,
+      settings.stream
+        ? {
+            onEvent: llmStreamRenderer.onEvent,
+            onLLMEvent: llmStreamRenderer.onLLMEvent,
+          }
+        : {},
+    );
     const request = RunRequestSchema.parse({
       task: joined,
       workingDirectory: path.resolve(options.cwd),
@@ -243,6 +288,7 @@ program
       metadata: {},
     });
     const result = await orchestrator.run(request);
+    llmStreamRenderer.finish();
     render(
       {
         runId: result.state.runId,
@@ -263,9 +309,29 @@ program
   .action(async (runId: string, options: RunIdCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, options);
     const logger = createLogger(settings);
-    const orchestrator = new Orchestrator(settings, logger);
+    const llmStreamRenderer = createCLIStreamRenderer(settings.outputFormat, { textMode: "assistant" });
+    const orchestrator = new Orchestrator(
+      settings,
+      logger,
+      settings.stream
+        ? {
+            onEvent: llmStreamRenderer.onEvent,
+            onLLMEvent: llmStreamRenderer.onLLMEvent,
+          }
+        : {},
+    );
     const result = await orchestrator.resume(runId);
-    render(result, settings.outputFormat);
+    llmStreamRenderer.finish();
+    renderRunResult(
+      {
+        writeLine: (line: string) => console.log(line),
+      },
+      result,
+      settings.outputFormat,
+      {
+        omitAssistantReply: llmStreamRenderer.hasStreamedAssistantContent(),
+      },
+    );
   });
 
 program
@@ -359,30 +425,36 @@ program
   .option("--output <format>", "text or json", "text")
   .option("--approve <approvalId>", "approve an approval request")
   .option("--deny <approvalId>", "deny an approval request")
-  .action(async (runId: string, options: RunIdCommandOptions) => {
+  .option("--resume", "resume the run immediately after approval")
+  .option("--no-stream", "disable streaming progress while resuming")
+  .action(async (runId: string, options: ApprovalsCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, options);
     const artifactStore = new RunStore(settings.artifactDir).createArtifactStore(runId);
     const manager = new ApprovalManager(artifactStore);
-    await manager.load();
     const approveId = asString(options.approve);
     const denyId = asString(options.deny);
-    if (approveId && denyId) {
-      throw new AppError("VALIDATION_ERROR", "Choose either --approve or --deny, not both.");
-    }
-    if (approveId) {
-      const updated = await manager.decide(approveId, "approved");
-      if (!updated) {
-        throw new AppError("NOT_FOUND", `Approval request not found: ${approveId}`);
-      }
-    }
-    if (denyId) {
-      const updated = await manager.decide(denyId, "denied");
-      if (!updated) {
-        throw new AppError("NOT_FOUND", `Approval request not found: ${denyId}`);
-      }
-    }
-    const approvals = manager.snapshot();
-    render(approvals, settings.outputFormat);
+    await handleApprovalsFlow(
+      {
+        runId,
+        settings,
+        ...(approveId ? { approveId } : {}),
+        ...(denyId ? { denyId } : {}),
+        resume: Boolean(options.resume),
+      },
+      {
+        manager,
+        writer: {
+          writeLine: (line: string) => console.log(line),
+        },
+        logger: createLogger(settings),
+        createOrchestrator: (resolvedSettings, logger, onEvent, onLLMEvent) =>
+          new Orchestrator(resolvedSettings, logger, {
+            ...(onEvent ? { onEvent } : {}),
+            ...(onLLMEvent ? { onLLMEvent } : {}),
+          }),
+        createStreamRenderer: createCLIStreamRenderer,
+      },
+    );
   });
 
 program
@@ -467,6 +539,8 @@ async function main(): Promise<void> {
 void main();
 
 async function loadCliSettings(cwd: string, options: Record<string, unknown>): Promise<Settings> {
+  const resolvedCwd = path.resolve(cwd);
+  await applyWorkspaceEnvToProcess(resolvedCwd);
   const artifactDir = asString(options.artifactDir);
   const approvalMode = asString(options.approvalMode) as Settings["approvalMode"] | undefined;
   const overrides = {
@@ -476,7 +550,7 @@ async function loadCliSettings(cwd: string, options: Record<string, unknown>): P
     outputFormat: (asString(options.output) as OutputFormat | undefined) ?? "text",
     stream: typeof options.stream === "boolean" ? options.stream : true,
   };
-  return loadSettings(path.resolve(cwd), overrides);
+  return loadSettings(resolvedCwd, overrides);
 }
 
 function parseInteger(value: string): number {
@@ -493,6 +567,34 @@ function render(value: unknown, outputFormat: OutputFormat): void {
     return;
   }
   console.log(JSON.stringify(value, null, 2));
+}
+
+function createCLIStreamRenderer(
+  outputFormat: OutputFormat,
+  options?: {
+    textMode?: "internal" | "assistant";
+  },
+): {
+  onEvent: (event: TelemetryEvent) => void;
+  onLLMEvent: (event: LLMStreamEvent) => void;
+  hasStreamedAssistantContent: () => boolean;
+  finish: () => void;
+} {
+  const writer = {
+    write: (text: string) => process.stdout.write(text),
+    writeLine: (line: string) => console.log(line),
+  };
+  const renderer = createLLMStreamRenderer(
+    writer,
+    outputFormat,
+    options,
+  );
+  return {
+    onEvent: (event) => renderHarnessEvent(writer, outputFormat, event),
+    onLLMEvent: renderer.onLLMEvent,
+    hasStreamedAssistantContent: renderer.hasStreamedAssistantContent,
+    finish: renderer.finish,
+  };
 }
 
 function handleError(error: unknown): never {

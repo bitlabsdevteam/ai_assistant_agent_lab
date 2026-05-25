@@ -114,6 +114,7 @@ export const ExecutionReportSchema = z.object({
   producedArtifacts: z.array(z.string()),
   blockers: z.array(z.string()),
   needsEvaluation: z.boolean().default(false),
+  assistantResponse: z.string().optional(),
   summary: z.string(),
 });
 
@@ -213,6 +214,10 @@ const ToolInputScalarSchema = z.union([z.string(), z.number(), z.boolean(), z.nu
 const ToolInputArraySchema = z.array(ToolInputScalarSchema);
 const ToolInputValueSchema: z.ZodType<string | number | boolean | null | Array<string | number | boolean | null>> =
   z.union([ToolInputScalarSchema, ToolInputArraySchema]);
+const ToolInputEntrySchema = z.object({
+  key: z.string().min(1),
+  value: ToolInputValueSchema,
+});
 
 export const PatchProposalSchema = z.object({
   path: z.string().min(1),
@@ -227,7 +232,7 @@ export const ExecutorActionSchema = z.discriminatedUnion("actionType", [
     observation: z.string().min(1),
     actionType: z.literal("tool_call"),
     toolName: z.string().min(1),
-    toolInput: z.record(z.string(), ToolInputValueSchema).default({}),
+    toolInput: z.array(ToolInputEntrySchema).default([]),
     rationaleSummary: z.string().min(1),
   }),
   z.object({
@@ -356,6 +361,7 @@ export const ApprovalRequestSchema = z.object({
   riskLevel: RiskLevelSchema,
   actionSummary: z.string(),
   inputDigest: z.string(),
+  input: z.unknown().optional(),
   decisionAt: z.string().optional(),
   target: z.string().optional(),
 });
@@ -471,7 +477,7 @@ export const ToolDescriptorSchema = z.object({
 });
 
 export const LLMRoleOverrideSchema = z.object({
-  provider: z.string().min(1).optional(),
+  provider: z.literal("openai").optional(),
   model: z.string().min(1).optional(),
   baseUrl: z.string().url().optional(),
   organization: z.string().min(1).optional(),
@@ -482,8 +488,8 @@ export const SettingsSchema = z.object({
   env: z.enum(["development", "test", "production"]).default("development"),
   logLevel: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
   artifactDir: z.string().min(1).default(".little-helper/runs"),
-  llmProvider: z.string().min(1).default("mock"),
-  llmModel: z.string().min(1).default("mock-default"),
+  llmProvider: z.literal("openai").default("openai"),
+  llmModel: z.string().min(1).default("gpt-5.4"),
   llmBaseUrl: z.string().url().optional(),
   llmOrganization: z.string().min(1).optional(),
   llmProject: z.string().min(1).optional(),

@@ -7,6 +7,8 @@
 - `little-helper logs RUN_ID`
 - `little-helper artifacts RUN_ID`
 - When `llmProvider=openai`, ensure `OPENAI_API_KEY` is present before relying on `doctor` or live runs.
+- When using `web.search`, ensure `PERPLEXITY_API_KEY` is present in the workspace `.env` or process environment.
+- Add `api.perplexity.ai` to `networkAllowlist` before expecting Perplexity-backed web search to pass policy checks.
 - When `llmRouting` is configured, `doctor` reports the aggregated health of the resolved analyzer, executor, and evaluator routes instead of only one global provider.
 
 ## Recovery

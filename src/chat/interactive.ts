@@ -5,13 +5,20 @@ import process from "node:process";
 
 import type { Logger } from "pino";
 
+import { applyWorkspaceEnvToProcess } from "../env.js";
 import { AppError } from "../errors.js";
+import { ApprovalManager } from "../harness/approvals.js";
+import type { RunResult } from "../harness/controller.js";
+import type { LLMStreamEvent } from "../llm/client.js";
 import { createLogger } from "../logger.js";
+import { ArtifactStore } from "../memory/artifact-store.js";
 import { Orchestrator } from "../orchestrator.js";
+import { createLLMStreamRenderer, renderHarnessEvent } from "../rendering/runtime-output.js";
 import {
   ChatEventSchema,
   type ApprovalMode,
   type ChatEvent,
+  type ChatSessionStatus,
   type HarnessStatus,
   type InteractiveSessionState,
   type OperatorMode,
@@ -39,13 +46,19 @@ export interface ChatCommandOptions {
 export interface ChatConsole {
   isTTY(): boolean;
   prompt(label: string): Promise<string>;
+  write(text: string): void;
   writeLine(line: string): void;
   close(): Promise<void>;
 }
 
 export interface ChatRuntimeDependencies {
   loadSettings: (cwd: string, options: Record<string, unknown>) => Promise<Settings>;
-  createOrchestrator: (settings: Settings, logger: Logger, onEvent?: (event: TelemetryEvent) => void) => Orchestrator;
+  createOrchestrator: (
+    settings: Settings,
+    logger: Logger,
+    onEvent?: (event: TelemetryEvent) => void,
+    onLLMEvent?: (event: LLMStreamEvent) => void,
+  ) => Orchestrator;
   createSessionManager: (artifactDir: string) => ChatSessionManager;
   console: ChatConsole;
 }
@@ -109,13 +122,14 @@ export async function runChatCommand(
 
   try {
     while (true) {
-      const label = baseSettings.outputFormat === "json" ? "" : formatPromptLabel(session.sessionId, interactive);
+      const label =
+        baseSettings.outputFormat === "json" ? "" : formatPromptLabel(session.sessionId, interactive, session.status);
       const input = (await consoleAdapter.prompt(label)).trim();
       if (input.length === 0) {
         continue;
       }
-      if (input.startsWith("/")) {
-        const next = await handleCommand(input, {
+      try {
+        const approvalContinuation = await maybeHandleApprovalReply(input, {
           session,
           interactive,
           sessionManager,
@@ -124,64 +138,107 @@ export async function runChatCommand(
           logger,
           createOrchestrator,
         });
-        if (next === "exit") {
-          break;
+        if (approvalContinuation) {
+          session = approvalContinuation.session;
+          interactive = approvalContinuation.interactive;
+          continue;
         }
-        session = next.session;
-        interactive = next.interactive;
-        continue;
-      }
 
-      const prepared = await sessionManager.prepareTurn({
-        sessionId: session.sessionId,
-        message: input,
-        profile: options.profile,
-        dryRun: options.dryRun,
-        maxIterations: options.maxIterations ?? baseSettings.maxIterations,
-      });
-      session = prepared.session;
-      interactive = await sessionManager.loadInteractiveState(session.sessionId);
-      emitChatEvent(consoleAdapter, baseSettings.outputFormat, {
-        type: "chat.turn_started",
-        timestamp: new Date().toISOString(),
-        sessionId: session.sessionId,
-        turnId: prepared.turnId,
-        message: input,
-      });
+        if (input.startsWith("/")) {
+          const next = await handleCommand(input, {
+            session,
+            interactive,
+            sessionManager,
+            console: consoleAdapter,
+            settings: baseSettings,
+            logger,
+            createOrchestrator,
+          });
+          if (next === "exit") {
+            break;
+          }
+          session = next.session;
+          interactive = next.interactive;
+          continue;
+        }
 
-      const sessionSettings = resolveInteractiveSettings(baseSettings, interactive);
-      const orchestrator = createOrchestrator(
-        sessionSettings,
-        logger,
-        sessionSettings.stream ? (event) => renderHarnessEvent(consoleAdapter, sessionSettings.outputFormat, event) : undefined,
-      );
-      const result = await orchestrator.run(prepared.request);
-      const reply = buildAssistantReply(result.state.status, result.state.runId, {
-        executionSummary: result.execution?.summary,
-        evaluationStatus: result.evaluation?.status,
-      });
-      session = await sessionManager.completeTurn({
-        sessionId: session.sessionId,
-        turnId: prepared.turnId,
-        runId: result.state.runId,
-        assistantContent: reply,
-        assistantSummary: reply,
-        artifactRefs: collectRunArtifacts(result.state),
-        runStatus: result.state.status,
-      });
-      interactive = await sessionManager.loadInteractiveState(session.sessionId);
-      writeAssistantReply(consoleAdapter, sessionSettings.outputFormat, reply, result.state.runId);
-      emitChatEvent(consoleAdapter, sessionSettings.outputFormat, {
-        type: "chat.turn_completed",
-        timestamp: new Date().toISOString(),
-        sessionId: session.sessionId,
-        turnId: prepared.turnId,
-        runId: result.state.runId,
-        status: result.state.status,
-      });
-      if (result.state.status === "awaiting_approval" && sessionSettings.outputFormat === "text") {
-        const pending = await sessionManager.listPendingApprovals(session.sessionId);
-        consoleAdapter.writeLine(renderPendingApprovals(pending));
+        const prepared = await sessionManager.prepareTurn({
+          sessionId: session.sessionId,
+          message: input,
+          profile: options.profile,
+          dryRun: options.dryRun,
+          maxIterations: options.maxIterations ?? baseSettings.maxIterations,
+        });
+        session = prepared.session;
+        interactive = await sessionManager.loadInteractiveState(session.sessionId);
+        emitChatEvent(consoleAdapter, baseSettings.outputFormat, {
+          type: "chat.turn_started",
+          timestamp: new Date().toISOString(),
+          sessionId: session.sessionId,
+          turnId: prepared.turnId,
+          message: input,
+        });
+
+        const sessionSettings = resolveInteractiveSettings(baseSettings, interactive);
+        const llmStreamRenderer = createLLMStreamRenderer(consoleAdapter, sessionSettings.outputFormat, {
+          textMode: "assistant",
+        });
+        const orchestrator = createOrchestrator(
+          sessionSettings,
+          logger,
+          sessionSettings.stream ? (event) => renderHarnessEvent(consoleAdapter, sessionSettings.outputFormat, event) : undefined,
+          sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
+        );
+        const result = await orchestrator.run(prepared.request);
+        const pendingApprovals =
+          result.state.status === "awaiting_approval"
+            ? await loadPendingRunApprovals(sessionSettings.artifactDir, result.state.runId)
+            : [];
+        const reply = buildAssistantReply(result, pendingApprovals);
+        const replySummary = buildAssistantSummary(result.state.status, result.state.runId, {
+          executionSummary: result.execution?.summary,
+          evaluationStatus: result.evaluation?.status,
+        });
+        session = await sessionManager.completeTurn({
+          sessionId: session.sessionId,
+          turnId: prepared.turnId,
+          runId: result.state.runId,
+          assistantContent: reply,
+          assistantSummary: replySummary,
+          artifactRefs: collectRunArtifacts(result.state),
+          runStatus: result.state.status,
+        });
+        interactive = await sessionManager.loadInteractiveState(session.sessionId);
+        llmStreamRenderer.finish();
+        writeAssistantReply(consoleAdapter, sessionSettings.outputFormat, reply, result.state.runId, {
+          summary: replySummary,
+          omitBody: llmStreamRenderer.hasStreamedAssistantContent(),
+          streamBody: sessionSettings.stream,
+          suppressWhenOmitted: true,
+        });
+        emitChatEvent(consoleAdapter, sessionSettings.outputFormat, {
+          type: "chat.turn_completed",
+          timestamp: new Date().toISOString(),
+          sessionId: session.sessionId,
+          turnId: prepared.turnId,
+          runId: result.state.runId,
+          status: result.state.status,
+        });
+        if (result.state.status === "awaiting_approval" && sessionSettings.outputFormat === "text" && pendingApprovals.length > 1) {
+          const pending = pendingApprovals.length > 0 ? pendingApprovals : await sessionManager.listPendingApprovals(session.sessionId);
+          consoleAdapter.writeLine(renderPendingApprovals(pending));
+        }
+      } catch (error) {
+        const message = formatChatError(error);
+        if (!input.startsWith("/")) {
+          session = await sessionManager.failTurn({
+            sessionId: session.sessionId,
+            assistantContent: message,
+            assistantSummary: message,
+          });
+          interactive = await sessionManager.loadInteractiveState(session.sessionId);
+        }
+        writeChatError(consoleAdapter, baseSettings.outputFormat, message);
       }
     }
   } finally {
@@ -204,6 +261,10 @@ class ReadlineChatConsole implements ChatConsole {
     return this.rl.question(label);
   }
 
+  public write(text: string): void {
+    process.stdout.write(text);
+  }
+
   public close(): Promise<void> {
     this.rl.close();
     return Promise.resolve();
@@ -223,7 +284,12 @@ async function handleCommand(
     console: ChatConsole;
     settings: Settings;
     logger: Logger;
-    createOrchestrator: (settings: Settings, logger: Logger, onEvent?: (event: TelemetryEvent) => void) => Orchestrator;
+    createOrchestrator: (
+      settings: Settings,
+      logger: Logger,
+      onEvent?: (event: TelemetryEvent) => void,
+      onLLMEvent?: (event: LLMStreamEvent) => void,
+    ) => Orchestrator;
   },
 ): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState } | "exit"> {
   const [command, ...args] = input.split(/\s+/);
@@ -261,31 +327,7 @@ async function handleCommand(
         throw new AppError("VALIDATION_ERROR", "Usage: /resume <runId>");
       }
       await dependencies.sessionManager.recordSystemTurn(dependencies.session.sessionId, input, `Resume run ${runId}`);
-      const sessionSettings = resolveInteractiveSettings(dependencies.settings, dependencies.interactive);
-      const orchestrator = dependencies.createOrchestrator(
-        sessionSettings,
-        dependencies.logger,
-        sessionSettings.stream
-          ? (event) => renderHarnessEvent(dependencies.console, sessionSettings.outputFormat, event)
-          : undefined,
-      );
-      const result = await orchestrator.resume(runId);
-      const reply = buildAssistantReply(result.state.status, result.state.runId, {
-        executionSummary: result.execution?.summary,
-        evaluationStatus: result.evaluation?.status,
-      });
-      const session = await dependencies.sessionManager.completeTurn({
-        sessionId: dependencies.session.sessionId,
-        turnId: createSyntheticTurnId("resume", runId),
-        runId: result.state.runId,
-        assistantContent: reply,
-        assistantSummary: reply,
-        artifactRefs: collectRunArtifacts(result.state),
-        runStatus: result.state.status,
-      });
-      const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
-      writeAssistantReply(dependencies.console, sessionSettings.outputFormat, reply, result.state.runId);
-      return { session, interactive };
+      return resumeRunInChat(runId, dependencies, createSyntheticTurnId("resume", runId));
     }
     case "/approvals": {
       const approvals = await dependencies.sessionManager.listPendingApprovals(dependencies.session.sessionId);
@@ -294,23 +336,8 @@ async function handleCommand(
     }
     case "/approve":
     case "/deny": {
-      const approvalId = args[0];
-      if (!approvalId) {
-        throw new AppError("VALIDATION_ERROR", `Usage: ${command} <approvalId>`);
-      }
       const decision = command === "/approve" ? "approved" : "denied";
-      const updated = await dependencies.sessionManager.decideApproval(dependencies.session.sessionId, approvalId, decision);
-      if (!updated) {
-        throw new AppError("NOT_FOUND", `Approval request not found: ${approvalId}`);
-      }
-      const session = await dependencies.sessionManager.recordSystemTurn(
-        dependencies.session.sessionId,
-        input,
-        `${decision} approval ${approvalId}`,
-      );
-      const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
-      dependencies.console.writeLine(`${decision} ${approvalId} for run ${updated.runId}`);
-      return { session, interactive };
+      return decideApprovalInChat(args[0], decision, dependencies, input);
     }
     case "/diff": {
       const runId = args[0] ?? dependencies.session.activeRunId;
@@ -414,25 +441,261 @@ function emitChatEvent(consoleAdapter: ChatConsole, outputFormat: OutputFormat, 
   }
 }
 
-function renderHarnessEvent(consoleAdapter: ChatConsole, outputFormat: OutputFormat, event: TelemetryEvent): void {
-  if (outputFormat === "json") {
-    consoleAdapter.writeLine(JSON.stringify({ type: "harness.event", ...event }));
-    return;
+async function maybeHandleApprovalReply(
+  input: string,
+  dependencies: {
+    session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>;
+    interactive: InteractiveSessionState;
+    sessionManager: ChatSessionManager;
+    console: ChatConsole;
+    settings: Settings;
+    logger: Logger;
+    createOrchestrator: (
+      settings: Settings,
+      logger: Logger,
+      onEvent?: (event: TelemetryEvent) => void,
+      onLLMEvent?: (event: LLMStreamEvent) => void,
+    ) => Orchestrator;
+  },
+): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState } | undefined> {
+  const normalized = input.trim().toLowerCase();
+  const decision = parseImplicitApprovalDecision(normalized);
+  if (!decision) {
+    return undefined;
   }
-  const label = event.event.replaceAll(".", " ");
-  consoleAdapter.writeLine(`[${event.runId}] ${label} (${event.status})`);
+  const pending = await dependencies.sessionManager.listPendingApprovals(dependencies.session.sessionId);
+  if (pending.length === 0) {
+    return undefined;
+  }
+  return decideApprovalInChat(undefined, decision, dependencies, input);
 }
 
-function writeAssistantReply(consoleAdapter: ChatConsole, outputFormat: OutputFormat, reply: string, runId: string): void {
+function parseImplicitApprovalDecision(input: string): "approved" | "denied" | undefined {
+  if (/^(approve|approved|yes|y|ok|okay|continue|go ahead|do it|proceed|ship it)([.! ]+.*)?$/i.test(input)) {
+    return "approved";
+  }
+  if (/^(deny|denied|reject|no|n|stop|cancel)([.! ]+.*)?$/i.test(input)) {
+    return "denied";
+  }
+  return undefined;
+}
+
+async function decideApprovalInChat(
+  approvalId: string | undefined,
+  decision: "approved" | "denied",
+  dependencies: {
+    session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>;
+    interactive: InteractiveSessionState;
+    sessionManager: ChatSessionManager;
+    console: ChatConsole;
+    settings: Settings;
+    logger: Logger;
+    createOrchestrator: (
+      settings: Settings,
+      logger: Logger,
+      onEvent?: (event: TelemetryEvent) => void,
+      onLLMEvent?: (event: LLMStreamEvent) => void,
+    ) => Orchestrator;
+  },
+  commandText: string,
+): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState }> {
+  const target = await resolveApprovalTarget(dependencies.sessionManager, dependencies.session.sessionId, approvalId, dependencies.session.activeRunId);
+  const updated = await dependencies.sessionManager.decideApproval(dependencies.session.sessionId, target.id, decision);
+  if (!updated) {
+    throw new AppError("NOT_FOUND", `Approval request not found: ${target.id}`);
+  }
+  await dependencies.sessionManager.recordSystemTurn(
+    dependencies.session.sessionId,
+    commandText,
+    `${decision} approval ${target.id}`,
+  );
+  if (decision === "denied") {
+    const session = await dependencies.sessionManager.refreshSession(dependencies.session.sessionId);
+    const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
+    dependencies.console.writeLine(`Denied ${target.id} for run ${updated.runId}.`);
+    return { session, interactive };
+  }
+  return resumeRunInChat(updated.runId, dependencies, createSyntheticTurnId("approval", updated.runId));
+}
+
+async function resolveApprovalTarget(
+  sessionManager: ChatSessionManager,
+  sessionId: string,
+  approvalId: string | undefined,
+  activeRunId?: string,
+): Promise<PendingSessionApproval> {
+  const pending = await sessionManager.listPendingApprovals(sessionId);
+  if (pending.length === 0) {
+    throw new AppError("NOT_FOUND", "No pending approvals.");
+  }
+  if (approvalId) {
+    const exact = pending.find((approval) => approval.id === approvalId);
+    if (!exact) {
+      throw new AppError("NOT_FOUND", `Approval request not found: ${approvalId}`);
+    }
+    return exact;
+  }
+  const activeRunPending = activeRunId ? pending.filter((approval) => approval.runId === activeRunId) : [];
+  if (activeRunPending.length === 1) {
+    return activeRunPending[0]!;
+  }
+  if (pending.length === 1) {
+    return pending[0]!;
+  }
+  throw new AppError("VALIDATION_ERROR", "Multiple approvals are pending. Use /approvals and then /approve <approvalId>.");
+}
+
+async function resumeRunInChat(
+  runId: string,
+  dependencies: {
+    session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>;
+    interactive: InteractiveSessionState;
+    sessionManager: ChatSessionManager;
+    console: ChatConsole;
+    settings: Settings;
+    logger: Logger;
+    createOrchestrator: (
+      settings: Settings,
+      logger: Logger,
+      onEvent?: (event: TelemetryEvent) => void,
+      onLLMEvent?: (event: LLMStreamEvent) => void,
+    ) => Orchestrator;
+  },
+  turnId: string,
+): Promise<{ session: Awaited<ReturnType<ChatSessionManager["loadSession"]>>; interactive: InteractiveSessionState }> {
+  const sessionSettings = resolveInteractiveSettings(dependencies.settings, dependencies.interactive);
+  const llmStreamRenderer = createLLMStreamRenderer(dependencies.console, sessionSettings.outputFormat, {
+    textMode: "assistant",
+  });
+  const orchestrator = dependencies.createOrchestrator(
+    sessionSettings,
+    dependencies.logger,
+    sessionSettings.stream
+      ? (event) => renderHarnessEvent(dependencies.console, sessionSettings.outputFormat, event)
+      : undefined,
+    sessionSettings.stream ? llmStreamRenderer.onLLMEvent : undefined,
+  );
+  const result = await orchestrator.resume(runId);
+  const pendingApprovals =
+    result.state.status === "awaiting_approval" ? await loadPendingRunApprovals(sessionSettings.artifactDir, result.state.runId) : [];
+  const reply = buildAssistantReply(result, pendingApprovals);
+  const replySummary = buildAssistantSummary(result.state.status, result.state.runId, {
+    executionSummary: result.execution?.summary,
+    evaluationStatus: result.evaluation?.status,
+  });
+  const session = await dependencies.sessionManager.completeTurn({
+    sessionId: dependencies.session.sessionId,
+    turnId,
+    runId: result.state.runId,
+    assistantContent: reply,
+    assistantSummary: replySummary,
+    artifactRefs: collectRunArtifacts(result.state),
+    runStatus: result.state.status,
+  });
+  const interactive = await dependencies.sessionManager.loadInteractiveState(session.sessionId);
+  llmStreamRenderer.finish();
+  writeAssistantReply(dependencies.console, sessionSettings.outputFormat, reply, result.state.runId, {
+    summary: replySummary,
+    omitBody: llmStreamRenderer.hasStreamedAssistantContent(),
+    streamBody: sessionSettings.stream,
+    suppressWhenOmitted: true,
+  });
+  if (result.state.status === "awaiting_approval" && sessionSettings.outputFormat === "text" && pendingApprovals.length > 1) {
+    dependencies.console.writeLine(renderPendingApprovals(pendingApprovals));
+  }
+  return { session, interactive };
+}
+
+function writeAssistantReply(
+  consoleAdapter: ChatConsole,
+  outputFormat: OutputFormat,
+  reply: string,
+  runId: string,
+  options?: {
+    summary?: string;
+    omitBody?: boolean;
+    streamBody?: boolean;
+    suppressWhenOmitted?: boolean;
+  },
+): void {
   if (outputFormat === "json") {
-    consoleAdapter.writeLine(JSON.stringify({ role: "assistant", runId, content: reply }));
+    consoleAdapter.writeLine(JSON.stringify({ role: "assistant", runId, content: options?.omitBody ? (options.summary ?? reply) : reply }));
     return;
   }
-  consoleAdapter.writeLine(reply);
-  consoleAdapter.writeLine(`run: ${runId}`);
+  if (options?.omitBody && options?.suppressWhenOmitted) {
+    return;
+  }
+  const content = options?.omitBody ? (options.summary ?? reply) : reply;
+  if (options?.streamBody) {
+    streamReply(consoleAdapter, content);
+  } else {
+    consoleAdapter.writeLine(content);
+  }
+}
+
+function writeChatError(consoleAdapter: ChatConsole, outputFormat: OutputFormat, message: string): void {
+  if (outputFormat === "json") {
+    consoleAdapter.writeLine(JSON.stringify({ role: "assistant", error: true, content: message }));
+    return;
+  }
+  consoleAdapter.writeLine(message);
 }
 
 function buildAssistantReply(
+  result: Pick<RunResult, "state" | "analysis" | "execution" | "evaluation">,
+  pendingApprovals: PendingSessionApproval[] = [],
+): string {
+  if (result.execution?.assistantResponse) {
+    return result.execution.assistantResponse;
+  }
+  if (result.state.status === "awaiting_approval") {
+    return buildApprovalReply(result.execution, pendingApprovals);
+  }
+  if ((result.execution?.blockers.length ?? 0) > 0) {
+    return result.execution?.blockers.join(" ") ?? "The run reported a blocker.";
+  }
+  if (result.evaluation?.status === "needs_revision") {
+    return result.evaluation.requiredRevisions[0] ?? buildAssistantSummary(result.state.status, result.state.runId, {
+      executionSummary: result.execution?.summary,
+      evaluationStatus: result.evaluation?.status,
+    });
+  }
+  return buildAssistantSummary(result.state.status, result.state.runId, {
+    executionSummary: result.execution?.summary,
+    evaluationStatus: result.evaluation?.status,
+  });
+}
+
+function buildApprovalReply(
+  execution?: Pick<NonNullable<RunResult["execution"]>, "toolCalls" | "blockers">,
+  pendingApprovals: PendingSessionApproval[] = [],
+): string {
+  if (pendingApprovals.length === 1) {
+    const approval = pendingApprovals[0]!;
+    return [
+      `I need approval to ${describeApprovalAction(approval.toolName)} before I can continue.`,
+      summarizeApprovalReason(approval.reason),
+      'Type "approve" to continue, or "deny" to reject.',
+    ].join(" ");
+  }
+  if (pendingApprovals.length > 1) {
+    return 'I need approval before I can continue. Multiple approvals are pending. Use "/approvals" to review them.';
+  }
+  const pendingToolCall = execution?.toolCalls
+    .slice()
+    .reverse()
+    .find((record) => record.approvalProvenance === "pending" || record.status === "skipped");
+  if (pendingToolCall?.toolName) {
+    return `I need approval to ${describeApprovalAction(pendingToolCall.toolName)} before I can continue.`;
+  }
+  const blocker = execution?.blockers[0];
+  if (blocker) {
+    return blocker;
+  }
+  return "I need approval before I can continue with the requested action.";
+}
+
+function buildAssistantSummary(
   status: HarnessStatus,
   runId: string,
   details: {
@@ -446,6 +709,70 @@ function buildAssistantReply(
     details.evaluationStatus ? `Evaluation: ${details.evaluationStatus}.` : undefined,
   ].filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
   return fragments.join(" ");
+}
+
+function formatChatError(error: unknown): string {
+  if (error instanceof AppError) {
+    return `Error [${error.code}]: ${error.message}`;
+  }
+  if (error instanceof Error) {
+    return `Error [INTERNAL_ERROR]: ${error.message}`;
+  }
+  return "Error [INTERNAL_ERROR]: Unknown chat failure.";
+}
+
+function streamReply(consoleAdapter: ChatConsole, reply: string): void {
+  const tokens = reply.match(/\S+\s*/g) ?? [reply];
+  for (const token of tokens) {
+    consoleAdapter.write(token);
+  }
+  consoleAdapter.write("\n");
+}
+
+function describeApprovalAction(toolName: string): string {
+  if (toolName === "web.search") {
+    return "search the web";
+  }
+  if (toolName === "web.fetch") {
+    return "access the web";
+  }
+  if (toolName === "fs.list") {
+    return "inspect the workspace";
+  }
+  if (toolName === "fs.read") {
+    return "read a file";
+  }
+  if (toolName === "fs.write" || toolName === "patch.apply") {
+    return "edit files";
+  }
+  if (toolName === "shell.exec" || toolName === "validation.run") {
+    return "run a command";
+  }
+  return `use ${toolName}`;
+}
+
+function capitalizeSentence(value: string): string {
+  return value.length > 0 ? `${value[0]!.toUpperCase()}${value.slice(1)}` : value;
+}
+
+function summarizeApprovalReason(reason: string): string {
+  const normalized = reason.trim();
+  if (/network access .* disabled by default/i.test(normalized)) {
+    return "Network access needs approval.";
+  }
+  if (/network target .* not allowlisted/i.test(normalized)) {
+    return "External network access needs approval.";
+  }
+  if (/approval required/i.test(normalized)) {
+    return "This action needs approval.";
+  }
+  if (/suggest mode requires approval/i.test(normalized)) {
+    return "Suggest mode needs approval before making changes.";
+  }
+  if (/auto-edit mode still requires approval/i.test(normalized)) {
+    return "This command needs approval in auto-edit mode.";
+  }
+  return normalized;
 }
 
 function collectRunArtifacts(state: {
@@ -468,9 +795,32 @@ function renderPendingApprovals(approvals: PendingSessionApproval[]): string {
   if (approvals.length === 0) {
     return "No pending approvals.";
   }
+  if (approvals.length === 1) {
+    const approval = approvals[0]!;
+    return [
+      `Approval requested: ${capitalizeSentence(describeApprovalAction(approval.toolName))}.`,
+      summarizeApprovalReason(approval.reason),
+      'Type "approve" to continue, or "deny" to reject.',
+    ].join("\n");
+  }
   return approvals
-    .map((approval) => `${approval.id} ${approval.toolName} ${approval.status} run=${approval.runId} reason=${approval.reason}`)
+    .map(
+      (approval) =>
+        `${approval.id}: ${capitalizeSentence(describeApprovalAction(approval.toolName))}. ${summarizeApprovalReason(approval.reason)}`,
+    )
+    .concat('Multiple approvals are pending. Use "/approve <approvalId>" or "/deny <approvalId>".')
     .join("\n");
+}
+
+async function loadPendingRunApprovals(artifactDir: string, runId: string): Promise<PendingSessionApproval[]> {
+  const manager = new ApprovalManager(new ArtifactStore(artifactDir, runId));
+  const approvals = await manager.load();
+  return approvals
+    .filter((approval) => approval.status === "pending")
+    .map((approval) => ({
+      ...approval,
+      runId,
+    }));
 }
 
 function renderHelp(): string {
@@ -515,8 +865,13 @@ function renderWelcome(sessionId: string, interactive: InteractiveSessionState):
   return `Chat session ${sessionId}. mode=${interactive.mode} model=${interactive.selectedModel ?? "default"}. Use /help for commands.`;
 }
 
-function formatPromptLabel(sessionId: string, interactive: InteractiveSessionState): string {
-  return `little-helper:${interactive.mode}:${sessionId.slice(-8)}> `;
+function formatPromptLabel(
+  sessionId: string,
+  interactive: InteractiveSessionState,
+  status?: ChatSessionStatus,
+): string {
+  const suffix = status === "awaiting_approval" ? " (approval)" : "";
+  return `little-helper:${interactive.mode}:${sessionId.slice(-8)}${suffix}> `;
 }
 
 function createSyntheticTurnId(prefix: string, runId: string): string {
@@ -584,6 +939,7 @@ async function renderReviewSummary(artifactDir: string, runId: string): Promise<
 }
 
 async function defaultLoadSettings(cwd: string, options: Record<string, unknown>): Promise<Settings> {
+  await applyWorkspaceEnvToProcess(cwd);
   const { loadSettings } = await import("../config.js");
   return loadSettings(cwd, {
     ...(typeof options.artifactDir === "string" ? { artifactDir: options.artifactDir } : {}),
@@ -598,6 +954,10 @@ function defaultCreateOrchestrator(
   settings: Settings,
   logger: Logger,
   onEvent?: (event: TelemetryEvent) => void,
+  onLLMEvent?: (event: LLMStreamEvent) => void,
 ): Orchestrator {
-  return new Orchestrator(settings, logger, onEvent ? { onEvent } : {});
+  return new Orchestrator(settings, logger, {
+    ...(onEvent ? { onEvent } : {}),
+    ...(onLLMEvent ? { onLLMEvent } : {}),
+  });
 }

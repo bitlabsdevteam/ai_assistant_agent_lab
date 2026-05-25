@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 
+import type { LLMClient, LLMStreamEvent } from "./llm/client.js";
 import { createLLMClient } from "./llm/providers.js";
 import { RunStore, createRunId } from "./memory/run-store.js";
 import { PermissionPolicy } from "./policy/permissions.js";
@@ -10,6 +11,8 @@ import type { RunRequest, Settings, TelemetryEvent } from "./schemas.js";
 
 export interface OrchestratorOptions {
   onEvent?: (event: TelemetryEvent) => void | Promise<void>;
+  onLLMEvent?: (event: LLMStreamEvent) => void | Promise<void>;
+  llm?: LLMClient;
 }
 
 export class Orchestrator {
@@ -25,15 +28,17 @@ export class Orchestrator {
     const runId = createRunId();
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
+    const llm = this.options.llm ?? createLLMClient(this.settings);
     const controller = new HarnessController({
       runStore,
       artifactStore,
-      llm: createLLMClient(this.settings),
+      llm,
       tools,
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
+      ...(this.options.onLLMEvent ? { onLLMEvent: this.options.onLLMEvent } : {}),
     });
     return controller.run(request);
   }
@@ -42,15 +47,17 @@ export class Orchestrator {
     const runStore = new RunStore(this.settings.artifactDir);
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
+    const llm = this.options.llm ?? createLLMClient(this.settings);
     const controller = new HarnessController({
       runStore,
       artifactStore,
-      llm: createLLMClient(this.settings),
+      llm,
       tools,
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
+      ...(this.options.onLLMEvent ? { onLLMEvent: this.options.onLLMEvent } : {}),
     });
     return controller.recover();
   }
@@ -59,15 +66,17 @@ export class Orchestrator {
     const runStore = new RunStore(this.settings.artifactDir);
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
+    const llm = this.options.llm ?? createLLMClient(this.settings);
     const controller = new HarnessController({
       runStore,
       artifactStore,
-      llm: createLLMClient(this.settings),
+      llm,
       tools,
       policy: new PermissionPolicy(this.settings),
       logger: this.logger,
       metrics: new MetricsCollector(),
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
+      ...(this.options.onLLMEvent ? { onLLMEvent: this.options.onLLMEvent } : {}),
     });
     return controller.resume();
   }

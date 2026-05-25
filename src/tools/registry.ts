@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { AppError } from "../errors.js";
 import { MCPClient } from "../mcp/client.js";
 import { buildApprovalRequest, type PolicyDecision } from "../policy/permissions.js";
+import { createEvent } from "../telemetry/events.js";
 import {
   MCPToolResultSchema,
   type ApprovalRequest,
@@ -15,7 +16,7 @@ import type { PermissionPolicy } from "../policy/permissions.js";
 import { DiffTool, FileSystemListTool, FileSystemReadTool, FileSystemWriteTool, GitReadTool, PatchTool, SearchTool } from "./filesystem.js";
 import { buildDescriptor, type RegisteredTool, type Tool, type ToolContext } from "./base.js";
 import { ShellTool, ValidationTool } from "./shell.js";
-import { WebFetchTool } from "./web.js";
+import { WebFetchTool, WebSearchTool } from "./web.js";
 
 function toRegisteredTool<
   TInput extends z.ZodType<unknown, z.ZodTypeDef, unknown>,
@@ -57,6 +58,7 @@ export class ToolRegistry {
     this.register(toRegisteredTool(this.shellTool));
     this.register(toRegisteredTool(new ValidationTool()));
     this.register(toRegisteredTool(new WebFetchTool()));
+    this.register(toRegisteredTool(new WebSearchTool()));
   }
 
   public static async create(settings: ToolContext["settings"]): Promise<ToolRegistry> {
@@ -111,8 +113,27 @@ export class ToolRegistry {
   }> {
     const tool = this.get(name);
     const startedAt = new Date().toISOString();
+    let completionStatus: "success" | "failed" | "denied" | undefined;
+    await emitToolEvent(context, "tool.started", "running", tool.descriptor.name, {
+      ...(tool.descriptor.category ? { category: tool.descriptor.category } : {}),
+      ...(options?.stepId ? { stepId: options.stepId } : {}),
+    });
     const decision = policy.decideTool(tool.descriptor, input, undefined, context.operatorMode, context.approvals);
     if (decision.outcome !== "allow") {
+      if (decision.outcome === "require_approval") {
+        await emitToolEvent(context, "tool.awaiting_approval", "pending", tool.descriptor.name, {
+          ...(tool.descriptor.category ? { category: tool.descriptor.category } : {}),
+          ...(options?.stepId ? { stepId: options.stepId } : {}),
+          reason: decision.reason,
+        });
+      } else {
+        completionStatus = "denied";
+        await emitToolEvent(context, "tool.completed", "denied", tool.descriptor.name, {
+          ...(tool.descriptor.category ? { category: tool.descriptor.category } : {}),
+          ...(options?.stepId ? { stepId: options.stepId } : {}),
+          reason: decision.reason,
+        });
+      }
       return handlePolicyOutcome(
         context.runId,
         tool.descriptor,
@@ -129,6 +150,7 @@ export class ToolRegistry {
       const artifactName = `tool-${sanitizeFileName(tool.descriptor.name)}-${Date.now()}.json`;
       const outputArtifact = await artifactStore.writeArtifactJson(artifactName, result);
       const enriched = enrichRecordFromResult(result);
+      completionStatus = "success";
       return {
         result,
         record: {
@@ -151,6 +173,7 @@ export class ToolRegistry {
         error instanceof AppError
           ? error
           : new AppError("TOOL_ERROR", `Tool execution failed: ${tool.descriptor.name}`, { cause: error });
+      completionStatus = appError.code === "POLICY_ERROR" ? "denied" : "failed";
       return {
         record: {
           id: `${context.runId}-${tool.descriptor.name}-${Date.now()}`,
@@ -166,6 +189,14 @@ export class ToolRegistry {
           error: appError.message,
         },
       };
+    } finally {
+      // Best-effort completion signal for live UI. Policy-pending calls emit a dedicated awaiting-approval event above.
+      if (decision.outcome === "allow") {
+        await emitToolEvent(context, "tool.completed", completionStatus ?? "success", tool.descriptor.name, {
+          ...(tool.descriptor.category ? { category: tool.descriptor.category } : {}),
+          ...(options?.stepId ? { stepId: options.stepId } : {}),
+        });
+      }
     }
   }
 
@@ -204,6 +235,27 @@ export class ToolRegistry {
       }
     }
   }
+}
+
+async function emitToolEvent(
+  context: ToolContext,
+  event: string,
+  status: string,
+  toolName: string,
+  details?: Record<string, unknown>,
+): Promise<void> {
+  if (!context.onTelemetryEvent) {
+    return;
+  }
+  await context.onTelemetryEvent(
+    createEvent({
+      runId: context.runId,
+      event,
+      status,
+      toolName,
+      ...(details ? { details } : {}),
+    }),
+  );
 }
 
 function handlePolicyOutcome(
@@ -289,12 +341,43 @@ function enrichRecordFromResult(result: unknown): Partial<ToolCallRecord> {
   return {
     ...(typeof candidate.normalizedCommand === "string" ? { command: candidate.normalizedCommand } : {}),
     ...(typeof candidate.exitCode === "number" ? { exitCode: candidate.exitCode } : {}),
-    ...(typeof candidate.stdoutSummary === "string" ? { stdoutSummary: candidate.stdoutSummary } : {}),
+    ...(typeof candidate.stdoutSummary === "string"
+      ? { stdoutSummary: candidate.stdoutSummary }
+      : summarizeResult(result)
+        ? { stdoutSummary: summarizeResult(result) }
+        : {}),
     ...(typeof candidate.stderrSummary === "string" ? { stderrSummary: candidate.stderrSummary } : {}),
     ...(typeof candidate.stdoutTruncated === "boolean" || typeof candidate.stderrTruncated === "boolean"
       ? { outputTruncated: Boolean(candidate.stdoutTruncated || candidate.stderrTruncated) }
       : {}),
   };
+}
+
+function summarizeResult(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+
+  const webSearchResult = result as {
+    provider?: unknown;
+    query?: unknown;
+    resultCount?: unknown;
+    results?: Array<{ title?: unknown; snippet?: unknown }>;
+  };
+  if (
+    webSearchResult.provider === "perplexity" &&
+    typeof webSearchResult.query === "string" &&
+    typeof webSearchResult.resultCount === "number"
+  ) {
+    const top = webSearchResult.results?.[0];
+    const topSummary =
+      typeof top?.title === "string" && typeof top?.snippet === "string"
+        ? ` Top result: ${top.title} - ${top.snippet}`
+        : "";
+    return `Found ${webSearchResult.resultCount} web result(s) for "${webSearchResult.query}".${topSummary}`.trim();
+  }
+
+  return undefined;
 }
 
 function summarizeInput(input: unknown): string {

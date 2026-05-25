@@ -18,7 +18,7 @@ import { LeaseManager } from "./lease-manager.js";
 import { RecoveryManager } from "./recovery.js";
 import { Scheduler } from "./scheduler.js";
 import { transitionRunState } from "./state-machine.js";
-import type { LLMClient } from "../llm/client.js";
+import type { LLMClient, LLMStreamEvent } from "../llm/client.js";
 import type { RunStore } from "../memory/run-store.js";
 import type { PermissionPolicy } from "../policy/permissions.js";
 import type { MetricsCollector } from "../telemetry/metrics.js";
@@ -43,6 +43,7 @@ export interface HarnessDependencies {
   logger: Logger;
   metrics: MetricsCollector;
   onEvent?: (event: TelemetryEvent) => void | Promise<void>;
+  onLLMEvent?: (event: LLMStreamEvent) => void | Promise<void>;
 }
 
 export interface RunResult {
@@ -117,12 +118,19 @@ export class HarnessController {
         request,
         buildContextEvidence({ analysis, execution, evaluation }),
       );
+      await this.writeAgentEvent(state.runId, "started", this.analyzer.name, {
+        phase: state.phase,
+        iteration,
+      });
       analysis = await this.analyzer.run(request, runtime);
       state = {
         ...state,
         analysisArtifact: await this.dependencies.artifactStore.writeJson("analysis.json", analysis),
       };
-      await this.writeEvent(state.runId, "agent.completed", "success", { agent: this.analyzer.name });
+      await this.writeAgentEvent(state.runId, "completed", this.analyzer.name, {
+        phase: state.phase,
+        iteration,
+      });
       state = await this.persistWithCheckpoint(state, budget);
 
       state = transitionRunState(state, "executing", "execution");
@@ -134,6 +142,10 @@ export class HarnessController {
         request,
         buildContextEvidence({ analysis, execution, evaluation }),
       );
+      await this.writeAgentEvent(state.runId, "started", this.executor.name, {
+        phase: state.phase,
+        iteration,
+      });
       execution = await this.executor.run({ analysis }, runtime);
       state = {
         ...state,
@@ -141,7 +153,10 @@ export class HarnessController {
       };
       await this.dependencies.artifactStore.writeJson("tool-calls.json", execution.toolCalls);
       await this.dependencies.artifactStore.writeJson("step-trace.jsonl", stepTrace);
-      await this.writeEvent(state.runId, "agent.completed", "success", { agent: this.executor.name });
+      await this.writeAgentEvent(state.runId, "completed", this.executor.name, {
+        phase: state.phase,
+        iteration,
+      });
       state = await this.persistWithCheckpoint(state, budget);
 
       const pendingApproval = this.approvals.pending().length > 0;
@@ -161,11 +176,19 @@ export class HarnessController {
         request,
         buildContextEvidence({ analysis, execution, evaluation }),
       );
+      await this.writeAgentEvent(state.runId, "started", this.evaluator.name, {
+        phase: state.phase,
+        iteration,
+      });
       evaluation = await this.evaluator.run({ analysis, execution }, runtime);
       state = {
         ...state,
         evaluationArtifact: await this.dependencies.artifactStore.writeJson("evaluation.json", evaluation),
       };
+      await this.writeAgentEvent(state.runId, "completed", this.evaluator.name, {
+        phase: state.phase,
+        iteration,
+      });
       await this.writeEvent(
         state.runId,
         evaluation.status === "pass" ? "evaluation.passed" : "evaluation.failed",
@@ -282,6 +305,11 @@ export class HarnessController {
         evaluation: recovered.evaluation,
       }),
     );
+    await this.writeAgentEvent(state.runId, "started", this.executor.name, {
+      phase: state.phase,
+      iteration: state.iteration,
+      resume: true,
+    });
     const execution = await this.executor.run(
       {
         analysis: recovered.analysis,
@@ -295,6 +323,11 @@ export class HarnessController {
     };
     await this.dependencies.artifactStore.writeJson("tool-calls.json", execution.toolCalls);
     await this.dependencies.artifactStore.writeJson("step-trace.jsonl", stepTrace);
+    await this.writeAgentEvent(state.runId, "completed", this.executor.name, {
+      phase: state.phase,
+      iteration: state.iteration,
+      resume: true,
+    });
     state = await this.persistWithCheckpoint(state, recovered.budget);
 
     if (this.approvals.pending().length > 0) {
@@ -323,11 +356,21 @@ export class HarnessController {
         evaluation: recovered.evaluation,
       }),
     );
+    await this.writeAgentEvent(state.runId, "started", this.evaluator.name, {
+      phase: state.phase,
+      iteration: state.iteration,
+      resume: true,
+    });
     const evaluation = await this.evaluator.run({ analysis: recovered.analysis, execution }, runtime);
     state = {
       ...state,
       evaluationArtifact: await this.dependencies.artifactStore.writeJson("evaluation.json", evaluation),
     };
+    await this.writeAgentEvent(state.runId, "completed", this.evaluator.name, {
+      phase: state.phase,
+      iteration: state.iteration,
+      resume: true,
+    });
     state = await this.persistWithCheckpoint(state, recovered.budget);
 
     const nextStatus = this.scheduler.nextStatusFromEvaluation(evaluation);
@@ -394,6 +437,8 @@ export class HarnessController {
       logger: this.dependencies.logger,
       budget,
       stepTrace,
+      ...(this.dependencies.onLLMEvent ? { onLLMEvent: this.dependencies.onLLMEvent } : {}),
+      ...(this.dependencies.onEvent ? { onTelemetryEvent: this.dependencies.onEvent } : {}),
       signal: AbortSignal.timeout(30_000),
     };
   }
@@ -444,6 +489,18 @@ export class HarnessController {
       telemetryEvent,
     );
     await this.dependencies.onEvent?.(telemetryEvent);
+  }
+
+  private async writeAgentEvent(
+    runId: string,
+    lifecycle: "started" | "completed",
+    agent: string,
+    details?: Record<string, unknown>,
+  ): Promise<void> {
+    await this.writeEvent(runId, `agent.${lifecycle}`, lifecycle === "completed" ? "success" : "running", {
+      agent,
+      ...(details ? details : {}),
+    });
   }
 
   private async readStepTrace(): Promise<AgentRuntimeContext["stepTrace"]> {

@@ -54,6 +54,12 @@ export interface CompleteChatTurnInput {
   runStatus: HarnessStatus;
 }
 
+export interface FailChatTurnInput {
+  sessionId: string;
+  assistantContent: string;
+  assistantSummary: string;
+}
+
 export class ChatSessionManager {
   public constructor(
     private readonly artifactDir: string,
@@ -202,6 +208,31 @@ export class ChatSessionManager {
       activeRunId:
         input.runStatus === "awaiting_approval" || input.runStatus === "blocked" ? input.runId : undefined,
       pendingPatchArtifact: await this.findPendingPatchArtifact(input.sessionId, input.runId),
+      recentActivitySummary: summarizeContent(input.assistantSummary),
+    });
+    return session;
+  }
+
+  public async failTurn(input: FailChatTurnInput): Promise<ChatSessionState> {
+    const assistantTurn = ChatTurnRecordSchema.parse({
+      turnId: createRunId(this.now()),
+      role: "assistant",
+      content: input.assistantContent,
+      timestamp: this.timestamp(),
+      artifactRefs: [],
+      summary: input.assistantSummary,
+    });
+    await this.appendTurnRecord(input.sessionId, assistantTurn);
+    const session = await this.recomputeSession(input.sessionId, {
+      status: "idle",
+      activeRunId: undefined,
+    });
+    const interactive = await this.loadInteractiveState(input.sessionId);
+    await this.persistInteractiveState({
+      ...interactive,
+      updatedAt: this.timestamp(),
+      activeRunId: undefined,
+      pendingPatchArtifact: undefined,
       recentActivitySummary: summarizeContent(input.assistantSummary),
     });
     return session;

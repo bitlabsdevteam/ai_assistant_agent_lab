@@ -15,7 +15,7 @@ Evaluation is handled by `src/agents/evaluator.ts`. Validation is now selected e
 
 Session supervision is handled by `src/harness/session-supervisor.ts` together with `sessions.json`. The supervisor refreshes persisted running sessions against local PIDs, records terminal reasons such as `operator_cancelled` or `stale_on_recovery`, and is used by both recovery and the `little-helper sessions` CLI controls.
 
-LLM routing lives behind `src/llm/client.ts` and `src/llm/providers.ts`. The current build supports both the deterministic mock client and a real OpenAI Responses adapter that uses structured JSON-schema output derived from the runtime's Zod contracts.
+LLM routing lives behind `src/llm/client.ts` and `src/llm/providers.ts`. The current build targets the OpenAI Responses API and validates structured JSON-schema output derived from the runtime's Zod contracts.
 
 The runtime now resolves provider settings per role. Global `llmProvider` and `llmModel` act as defaults, while `settings.llmRouting.analyzer`, `settings.llmRouting.executor`, and `settings.llmRouting.evaluator` can override provider, model, base URL, organization, and project independently.
 

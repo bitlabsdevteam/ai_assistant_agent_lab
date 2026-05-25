@@ -6,6 +6,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { AppError } from "./errors.js";
+import { loadWorkspaceEnv } from "./env.js";
 import { listResolvedLLMConfigs } from "./llm/routing.js";
 import { SettingsSchema, type ApprovalMode, type OutputFormat, type Settings } from "./schemas.js";
 
@@ -58,6 +59,7 @@ export async function loadSettings(
   overrides: CliOverrides = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Settings> {
+  const resolvedEnv = await loadWorkspaceEnv(workingDirectory, env);
   const projectConfigPath = path.join(workingDirectory, ".little-helper.config.json");
   const userConfigPath = path.join(homedir(), ".config", "little-helper", "config.json");
 
@@ -66,13 +68,13 @@ export async function loadSettings(
   };
   const projectConfig = await readJsonFileIfExists(projectConfigPath);
   const userConfig = await readJsonFileIfExists(userConfigPath);
-  const envConfig = parseEnvSettings(env);
+  const envConfig = parseEnvSettings(resolvedEnv);
   const cliConfig: Record<string, unknown> = {
-    artifactDir: overrides.artifactDir,
-    approvalMode: overrides.approvalMode,
-    maxIterations: overrides.maxIterations,
-    outputFormat: overrides.outputFormat,
-    stream: overrides.stream,
+    ...(overrides.artifactDir ? { artifactDir: overrides.artifactDir } : {}),
+    ...(overrides.approvalMode ? { approvalMode: overrides.approvalMode } : {}),
+    ...(typeof overrides.maxIterations === "number" ? { maxIterations: overrides.maxIterations } : {}),
+    ...(overrides.outputFormat ? { outputFormat: overrides.outputFormat } : {}),
+    ...(typeof overrides.stream === "boolean" ? { stream: overrides.stream } : {}),
   };
 
   const merged = {
@@ -96,7 +98,7 @@ export async function loadSettings(
     allowedRoots: normalizeRoots(workingDirectory, parsed.data.allowedRoots),
   });
 
-  validateProductionSettings(settings, env);
+  validateProductionSettings(settings, resolvedEnv);
   return settings;
 }
 
@@ -115,10 +117,7 @@ export function validateProductionSettings(settings: Settings, env: NodeJS.Proce
     return;
   }
   for (const { role, config } of listResolvedLLMConfigs(settings)) {
-    if (config.provider === "mock") {
-      throw new AppError("CONFIG_ERROR", `Production mode requires a non-mock LLM provider for role '${role}'.`);
-    }
-    if (config.provider === "openai" && !env.OPENAI_API_KEY) {
+    if (!env.OPENAI_API_KEY) {
       throw new AppError(
         "CONFIG_ERROR",
         `Production mode with llmProvider 'openai' requires OPENAI_API_KEY for role '${role}'.`,
