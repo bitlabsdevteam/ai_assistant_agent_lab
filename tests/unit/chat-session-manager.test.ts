@@ -8,18 +8,36 @@ import { ChatSessionManager } from "../../src/chat/session-manager.js";
 
 describe("chat session manager", () => {
   it("creates a session and persists session artifacts", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-session-"));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "little-helper-chat-session-"),
+    );
     const artifactDir = path.join(workspace, ".runs");
     const manager = new ChatSessionManager(artifactDir);
 
-    const session = await manager.createSession({ workingDirectory: workspace });
+    const session = await manager.createSession({
+      workingDirectory: workspace,
+    });
 
     const sessionJson = JSON.parse(
-      await readFile(path.join(artifactDir, "chat", session.sessionId, "session.json"), "utf8"),
+      await readFile(
+        path.join(artifactDir, "chat", session.sessionId, "session.json"),
+        "utf8",
+      ),
     ) as { sessionId: string; status: string };
-    const summary = await readFile(path.join(artifactDir, "chat", session.sessionId, "summary.md"), "utf8");
+    const summary = await readFile(
+      path.join(artifactDir, "chat", session.sessionId, "summary.md"),
+      "utf8",
+    );
     const interactive = JSON.parse(
-      await readFile(path.join(artifactDir, "chat", session.sessionId, "interactive-session.json"), "utf8"),
+      await readFile(
+        path.join(
+          artifactDir,
+          "chat",
+          session.sessionId,
+          "interactive-session.json",
+        ),
+        "utf8",
+      ),
     ) as { mode: string };
 
     expect(sessionJson.sessionId).toBe(session.sessionId);
@@ -29,7 +47,9 @@ describe("chat session manager", () => {
   });
 
   it("persists selected provider and model in interactive chat state", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-provider-"));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "little-helper-chat-provider-"),
+    );
     const artifactDir = path.join(workspace, ".runs");
     const manager = new ChatSessionManager(artifactDir);
 
@@ -40,7 +60,15 @@ describe("chat session manager", () => {
     });
 
     const interactive = JSON.parse(
-      await readFile(path.join(artifactDir, "chat", session.sessionId, "interactive-session.json"), "utf8"),
+      await readFile(
+        path.join(
+          artifactDir,
+          "chat",
+          session.sessionId,
+          "interactive-session.json",
+        ),
+        "utf8",
+      ),
     ) as { selectedProvider?: string; selectedModel?: string };
 
     expect(interactive.selectedProvider).toBe("gemini");
@@ -48,10 +76,14 @@ describe("chat session manager", () => {
   });
 
   it("prepares linked run requests with session and conversation context", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-request-"));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "little-helper-chat-request-"),
+    );
     const artifactDir = path.join(workspace, ".runs");
     const manager = new ChatSessionManager(artifactDir);
-    const session = await manager.createSession({ workingDirectory: workspace });
+    const session = await manager.createSession({
+      workingDirectory: workspace,
+    });
 
     const first = await manager.prepareTurn({
       sessionId: session.sessionId,
@@ -80,13 +112,23 @@ describe("chat session manager", () => {
 
     expect(first.request.metadata.sessionId).toBe(session.sessionId);
     expect(first.request.metadata.turnId).toBe(first.turnId);
-    expect(second.request.conversationContext?.sessionId).toBe(session.sessionId);
-    expect(second.request.conversationContext?.recentTurns.some((turn) => turn.runId === "run-1")).toBe(true);
-    expect(second.request.conversationContext?.includedArtifactRefs).toContain("/tmp/run-1/final-report.md");
+    expect(second.request.conversationContext?.sessionId).toBe(
+      session.sessionId,
+    );
+    expect(
+      second.request.conversationContext?.recentTurns.some(
+        (turn) => turn.runId === "run-1",
+      ),
+    ).toBe(true);
+    expect(second.request.conversationContext?.includedArtifactRefs).toContain(
+      "/tmp/run-1/final-report.md",
+    );
   });
 
   it("carries selected provider and model into prepared run metadata", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-provider-request-"));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "little-helper-chat-provider-request-"),
+    );
     const artifactDir = path.join(workspace, ".runs");
     const manager = new ChatSessionManager(artifactDir);
     const session = await manager.createSession({
@@ -104,17 +146,65 @@ describe("chat session manager", () => {
     });
 
     expect(prepared.request.metadata.selectedProvider).toBe("anthropic");
-    expect(prepared.request.metadata.selectedModel).toBe("claude-3-7-sonnet-latest");
+    expect(prepared.request.metadata.selectedModel).toBe(
+      "claude-3-7-sonnet-latest",
+    );
+  });
+
+  it("copies editor context into the prepared run request", async () => {
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "little-helper-chat-editor-context-"),
+    );
+    const artifactDir = path.join(workspace, ".runs");
+    const manager = new ChatSessionManager(artifactDir);
+    const session = await manager.createSession({
+      workingDirectory: workspace,
+    });
+
+    const prepared = await manager.prepareTurn({
+      sessionId: session.sessionId,
+      message: "Explain the selected function",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 1,
+      editorContext: {
+        workspaceId: "workspace-1",
+        activeFile: "src/example.ts",
+        selection: {
+          start: { line: 2, column: 1 },
+          end: { line: 4, column: 1 },
+          selectedText: "export function greet() {\n  return 'hello';\n}",
+        },
+        visibleRanges: [],
+        openFiles: ["src/example.ts"],
+        recentFiles: [],
+        diagnostics: [],
+        retrieval: {
+          enabled: true,
+          maxChunks: 2,
+        },
+      },
+    });
+
+    expect(prepared.request.editorContext?.workspaceId).toBe("workspace-1");
+    expect(prepared.request.editorContext?.selection?.selectedText).toContain(
+      "greet",
+    );
+    expect(prepared.request.editorContext?.retrieval.maxChunks).toBe(2);
   });
 
   it("compacts older turns into summary while preserving recent turns", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-compact-"));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "little-helper-chat-compact-"),
+    );
     const artifactDir = path.join(workspace, ".runs");
     const manager = new ChatSessionManager(artifactDir, {
       compactionThresholdChars: 80,
       recentTurnLimit: 2,
     });
-    const session = await manager.createSession({ workingDirectory: workspace });
+    const session = await manager.createSession({
+      workingDirectory: workspace,
+    });
 
     for (let index = 0; index < 4; index += 1) {
       const prepared = await manager.prepareTurn({
@@ -137,8 +227,15 @@ describe("chat session manager", () => {
 
     const refreshed = await manager.refreshSession(session.sessionId);
     const turns = await manager.listTurns(session.sessionId);
-    const summary = await readFile(path.join(artifactDir, "chat", session.sessionId, "summary.md"), "utf8");
-    const next = await manager.buildConversationContext(session.sessionId, "turn-next", "Append more to that file");
+    const summary = await readFile(
+      path.join(artifactDir, "chat", session.sessionId, "summary.md"),
+      "utf8",
+    );
+    const next = await manager.buildConversationContext(
+      session.sessionId,
+      "turn-next",
+      "Append more to that file",
+    );
 
     expect(refreshed.conversationSummary.length).toBeGreaterThan(0);
     expect(summary).toContain("user:");

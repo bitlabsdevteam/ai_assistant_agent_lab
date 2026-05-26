@@ -12,7 +12,12 @@ import {
   HeadlessMessageResponseSchema,
   HeadlessRunRecordSchema,
 } from "../schemas.js";
-import type { JobRepository, MessageRepository, RunRepository, SessionRepository } from "../repositories/base.js";
+import type {
+  JobRepository,
+  MessageRepository,
+  RunRepository,
+  SessionRepository,
+} from "../repositories/base.js";
 import { StreamService } from "./stream-service.js";
 import { createPublicId, toPublicRunResponse } from "./utils.js";
 
@@ -35,7 +40,11 @@ export class RunService {
     tenantId: string,
     sessionId: string,
     input: unknown,
-  ): Promise<{ response: HeadlessMessageResponse; runRequest: RunRequest; turnId: string }> {
+  ): Promise<{
+    response: HeadlessMessageResponse;
+    runRequest: RunRequest;
+    turnId: string;
+  }> {
     let session = await this.requireSession(tenantId, sessionId);
     const parsed = HeadlessMessageCreateInputSchema.parse(input);
     if (parsed.provider !== undefined) {
@@ -59,6 +68,7 @@ export class RunService {
       profile: session.profile,
       dryRun: false,
       maxIterations: this.options.maxIterations ?? 3,
+      ...(parsed.editorContext ? { editorContext: parsed.editorContext } : {}),
     });
     const timestamp = this.timestamp();
     const userMessageId = prepared.turnId;
@@ -127,12 +137,18 @@ export class RunService {
     return { response, runRequest: prepared.request, turnId: prepared.turnId };
   }
 
-  public async getRun(tenantId: string, runId: string): Promise<HeadlessRunResponse | undefined> {
+  public async getRun(
+    tenantId: string,
+    runId: string,
+  ): Promise<HeadlessRunResponse | undefined> {
     const run = await this.runs.getById(tenantId, runId);
     return run ? toPublicRunResponse(run) : undefined;
   }
 
-  private async requireSession(tenantId: string, sessionId: string): Promise<HeadlessSessionRecord> {
+  private async requireSession(
+    tenantId: string,
+    sessionId: string,
+  ): Promise<HeadlessSessionRecord> {
     const session = await this.sessions.getById(tenantId, sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);

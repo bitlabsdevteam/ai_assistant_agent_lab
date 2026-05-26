@@ -20,14 +20,43 @@ export const ToolCategorySchema = z.enum([
   "mcp",
   "validation",
 ]);
-export const ContextCompactionModeSchema = z.enum(["full", "compact", "aggressive"]);
-export const LLMUsageStageSchema = z.enum(["preflight", "compaction", "response"]);
-export const LLMProviderSchema = z.enum(["openai", "anthropic", "gemini", "moonshot"]);
+export const ContextCompactionModeSchema = z.enum([
+  "full",
+  "compact",
+  "aggressive",
+]);
+export const LLMUsageStageSchema = z.enum([
+  "preflight",
+  "compaction",
+  "response",
+]);
+export const LLMProviderSchema = z.enum([
+  "openai",
+  "anthropic",
+  "gemini",
+  "moonshot",
+]);
 
 export const ChatTurnRoleSchema = z.enum(["user", "assistant", "system"]);
-export const ChatSessionStatusSchema = z.enum(["idle", "running", "awaiting_approval", "blocked"]);
-export const HeadlessRunStatusSchema = z.enum(["queued", "running", "awaiting_approval", "completed", "failed", "blocked"]);
-export const HeadlessMessageRoleSchema = z.enum(["user", "assistant", "system"]);
+export const ChatSessionStatusSchema = z.enum([
+  "idle",
+  "running",
+  "awaiting_approval",
+  "blocked",
+]);
+export const HeadlessRunStatusSchema = z.enum([
+  "queued",
+  "running",
+  "awaiting_approval",
+  "completed",
+  "failed",
+  "blocked",
+]);
+export const HeadlessMessageRoleSchema = z.enum([
+  "user",
+  "assistant",
+  "system",
+]);
 export const HeadlessEventTypeSchema = z.enum([
   "session.created",
   "message.created",
@@ -42,9 +71,19 @@ export const HeadlessEventTypeSchema = z.enum([
   "run.completed",
   "run.failed",
 ]);
-export const HeadlessApprovalStateSchema = z.enum(["none", "pending", "approved", "denied"]);
+export const HeadlessApprovalStateSchema = z.enum([
+  "none",
+  "pending",
+  "approved",
+  "denied",
+]);
 export const HeadlessJobKindSchema = z.enum(["execute", "resume"]);
-export const HeadlessJobStatusSchema = z.enum(["queued", "leased", "completed", "failed"]);
+export const HeadlessJobStatusSchema = z.enum([
+  "queued",
+  "leased",
+  "completed",
+  "failed",
+]);
 export const SkillScopeSchema = z.enum(["project", "user"]);
 export const SkillMatchReasonSchema = z.enum([
   "explicit_name",
@@ -54,10 +93,101 @@ export const SkillMatchReasonSchema = z.enum([
   "description_match",
 ]);
 
+export const EditorDiagnosticSeveritySchema = z.enum([
+  "error",
+  "warning",
+  "info",
+  "hint",
+]);
+
 const SkillNameSchema = z
   .string()
   .min(1)
-  .regex(/^[a-z0-9][a-z0-9-]*$/, "Skill names must be lowercase slugs using letters, numbers, and hyphens.");
+  .regex(
+    /^[a-z0-9][a-z0-9-]*$/,
+    "Skill names must be lowercase slugs using letters, numbers, and hyphens.",
+  );
+
+export const EditorLocationSchema = z
+  .object({
+    offset: z.number().int().nonnegative().optional(),
+    line: z.number().int().positive().optional(),
+    column: z.number().int().positive().optional(),
+  })
+  .refine(
+    (value) =>
+      value.offset !== undefined ||
+      (value.line !== undefined && value.column !== undefined),
+    {
+      message:
+        "Editor locations require either an offset or a line/column pair.",
+    },
+  );
+
+export const EditorRangeSchema = z.object({
+  start: EditorLocationSchema,
+  end: EditorLocationSchema,
+});
+
+export const EditorSelectionSchema = EditorRangeSchema.extend({
+  selectedText: z.string().optional(),
+});
+
+export const EditorDiagnosticSchema = z.object({
+  filePath: z.string().min(1),
+  severity: EditorDiagnosticSeveritySchema.default("info"),
+  message: z.string().min(1),
+  code: z.string().min(1).optional(),
+  source: z.string().min(1).optional(),
+  range: EditorRangeSchema.optional(),
+});
+
+export const EditorContextSchema = z.object({
+  workspaceId: z.string().min(1),
+  activeFile: z.string().min(1).optional(),
+  selection: EditorSelectionSchema.optional(),
+  visibleRanges: z.array(EditorRangeSchema).default([]),
+  openFiles: z.array(z.string().min(1)).default([]),
+  recentFiles: z.array(z.string().min(1)).default([]),
+  diagnostics: z.array(EditorDiagnosticSchema).default([]),
+  snapshotVersion: z.string().min(1).optional(),
+  timestamp: z.string().min(1).optional(),
+  retrieval: z
+    .object({
+      enabled: z.boolean().default(true),
+      maxChunks: z.number().int().positive().default(4),
+    })
+    .default({}),
+});
+
+export const RetrievalProvenanceSchema = z.object({
+  kind: z.enum(["direct_hit", "symbol_hit", "path_hit", "semantic_hit"]),
+  workspaceId: z.string().min(1),
+  query: z.string().min(1),
+  matchedTerms: z.array(z.string().min(1)).default([]),
+  matchedSymbol: z.string().min(1).optional(),
+  matchedPath: z.string().min(1).optional(),
+});
+
+export const RetrievalScoreSchema = z.object({
+  direct: z.number().nonnegative().default(0),
+  symbol: z.number().nonnegative().default(0),
+  path: z.number().nonnegative().default(0),
+  lexical: z.number().nonnegative().default(0),
+  semantic: z.number().nonnegative().default(0),
+  total: z.number().nonnegative().default(0),
+});
+
+export const RetrievedContextChunkSchema = z.object({
+  chunkId: z.string().min(1),
+  filePath: z.string().min(1),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  symbol: z.string().min(1).optional(),
+  excerpt: z.string(),
+  scores: RetrievalScoreSchema,
+  provenance: RetrievalProvenanceSchema,
+});
 
 export const SkillManifestSchema = z.object({
   name: SkillNameSchema,
@@ -93,6 +223,7 @@ export const RunRequestSchema = z.object({
   dryRun: z.boolean().default(false),
   maxIterations: z.number().int().positive().default(3),
   selectedSkills: z.array(SkillSelectionSchema).default([]),
+  editorContext: EditorContextSchema.optional(),
   metadata: z
     .object({
       sessionId: z.string().min(1).optional(),
@@ -163,7 +294,9 @@ export const ToolCallRecordSchema = z.object({
   stdoutSummary: z.string().optional(),
   stderrSummary: z.string().optional(),
   outputTruncated: z.boolean().optional(),
-  approvalProvenance: z.enum(["none", "policy_allowed", "pending", "approved", "denied"]).optional(),
+  approvalProvenance: z
+    .enum(["none", "policy_allowed", "pending", "approved", "denied"])
+    .optional(),
   outputArtifact: z.string().optional(),
   diffArtifact: z.string().optional(),
   transcriptArtifact: z.string().optional(),
@@ -268,16 +401,28 @@ export const MCPToolResultSchema = z.object({
 export const AgentStepStateSchema = z.object({
   stepId: z.string(),
   observation: z.string(),
-  chosenActionType: z.enum(["tool_call", "patch_proposal", "final_response", "clarification", "handoff_to_evaluator"]),
+  chosenActionType: z.enum([
+    "tool_call",
+    "patch_proposal",
+    "final_response",
+    "clarification",
+    "handoff_to_evaluator",
+  ]),
   chosenActionName: z.string(),
   rationaleSummary: z.string(),
   resultSummary: z.string().optional(),
 });
 
-const ToolInputScalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+const ToolInputScalarSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+]);
 const ToolInputArraySchema = z.array(ToolInputScalarSchema);
-const ToolInputValueSchema: z.ZodType<string | number | boolean | null | Array<string | number | boolean | null>> =
-  z.union([ToolInputScalarSchema, ToolInputArraySchema]);
+const ToolInputValueSchema: z.ZodType<
+  string | number | boolean | null | Array<string | number | boolean | null>
+> = z.union([ToolInputScalarSchema, ToolInputArraySchema]);
 const ToolInputEntrySchema = z.object({
   key: z.string().min(1),
   value: ToolInputValueSchema,
@@ -340,7 +485,14 @@ export const TerminalSessionStateSchema = z.object({
   pid: z.number().int().positive().optional(),
   endedAt: z.string().optional(),
   terminationReason: z
-    .enum(["completed", "failed", "timed_out", "operator_cancelled", "stale_on_recovery", "process_missing"])
+    .enum([
+      "completed",
+      "failed",
+      "timed_out",
+      "operator_cancelled",
+      "stale_on_recovery",
+      "process_missing",
+    ])
     .optional(),
 });
 
@@ -423,7 +575,12 @@ export const HarnessStatusSchema = z.enum([
   "cancelled",
 ]);
 
-export const ApprovalStatusSchema = z.enum(["pending", "approved", "denied", "expired"]);
+export const ApprovalStatusSchema = z.enum([
+  "pending",
+  "approved",
+  "denied",
+  "expired",
+]);
 
 export const TenantRecordSchema = z.object({
   tenantId: z.string().min(1),
@@ -563,6 +720,7 @@ export const HeadlessMessageCreateInputSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).default({}),
   provider: LLMProviderSchema.optional(),
   model: z.string().min(1).optional(),
+  editorContext: EditorContextSchema.optional(),
 });
 
 export const HeadlessMessageResponseSchema = z.object({
@@ -664,6 +822,7 @@ export const ContextSourceSchema = z.object({
   kind: z.enum([
     "instruction",
     "user_task",
+    "editor_context",
     "chat_session",
     "run_state",
     "analysis",
@@ -675,6 +834,8 @@ export const ContextSourceSchema = z.object({
     "step_trace",
     "mcp_resource",
     "skill",
+    "workspace_file",
+    "retrieved_chunk",
   ]),
   label: z.string(),
   artifact: z.string().optional(),
@@ -701,7 +862,10 @@ export const AgentContextSnapshotSchema = z.object({
   sources: z.array(ContextSourceSchema),
 });
 
-export const ProtectedPromptScopeSchema = z.enum(["sealed_core", "runtime_policy"]);
+export const ProtectedPromptScopeSchema = z.enum([
+  "sealed_core",
+  "runtime_policy",
+]);
 
 export const ProtectedPromptRefSchema = z.object({
   id: z.string().min(1),
@@ -845,25 +1009,29 @@ export const SettingsSchema = z.object({
     })
     .default({}),
   contextCompactionThresholdPercent: z.number().positive().max(100).default(70),
-  llmContextWindows: z.record(z.string(), z.number().int().positive()).default({}),
+  llmContextWindows: z
+    .record(z.string(), z.number().int().positive())
+    .default({}),
   maxIterations: z.number().int().positive().default(3),
   approvalMode: ApprovalModeSchema.default("on-risk"),
   outputFormat: OutputFormatSchema.default("text"),
   stream: z.boolean().default(true),
   maxToolOutputChars: z.number().int().positive().default(8_000),
   commandTimeoutMs: z.number().int().positive().default(30_000),
-  shellAllowlist: z.array(z.string()).default([
-    "cat",
-    "echo",
-    "git",
-    "ls",
-    "node",
-    "npm",
-    "pnpm",
-    "pwd",
-    "rg",
-    "sed",
-  ]),
+  shellAllowlist: z
+    .array(z.string())
+    .default([
+      "cat",
+      "echo",
+      "git",
+      "ls",
+      "node",
+      "npm",
+      "pnpm",
+      "pwd",
+      "rg",
+      "sed",
+    ]),
   validationCommands: z.array(z.array(z.string())).default([]),
   allowedRoots: z.array(z.string()).default([]),
   networkAllowlist: z.array(z.string()).default([]),
@@ -895,6 +1063,17 @@ export type HeadlessJobKind = z.infer<typeof HeadlessJobKindSchema>;
 export type HeadlessJobStatus = z.infer<typeof HeadlessJobStatusSchema>;
 export type SkillScope = z.infer<typeof SkillScopeSchema>;
 export type SkillMatchReason = z.infer<typeof SkillMatchReasonSchema>;
+export type EditorDiagnosticSeverity = z.infer<
+  typeof EditorDiagnosticSeveritySchema
+>;
+export type EditorLocation = z.infer<typeof EditorLocationSchema>;
+export type EditorRange = z.infer<typeof EditorRangeSchema>;
+export type EditorSelection = z.infer<typeof EditorSelectionSchema>;
+export type EditorDiagnostic = z.infer<typeof EditorDiagnosticSchema>;
+export type EditorContext = z.infer<typeof EditorContextSchema>;
+export type RetrievalProvenance = z.infer<typeof RetrievalProvenanceSchema>;
+export type RetrievalScore = z.infer<typeof RetrievalScoreSchema>;
+export type RetrievedContextChunk = z.infer<typeof RetrievedContextChunkSchema>;
 export type SkillManifest = z.infer<typeof SkillManifestSchema>;
 export type ResolvedSkill = z.infer<typeof ResolvedSkillSchema>;
 export type SkillSelectionReason = z.infer<typeof SkillSelectionReasonSchema>;
@@ -918,7 +1097,9 @@ export type PatchProposal = z.infer<typeof PatchProposalSchema>;
 export type TerminalSessionState = z.infer<typeof TerminalSessionStateSchema>;
 export type ChatTurnRecord = z.infer<typeof ChatTurnRecordSchema>;
 export type ChatSessionState = z.infer<typeof ChatSessionStateSchema>;
-export type InteractiveSessionState = z.infer<typeof InteractiveSessionStateSchema>;
+export type InteractiveSessionState = z.infer<
+  typeof InteractiveSessionStateSchema
+>;
 export type ExecutorStepMemory = z.infer<typeof ExecutorStepMemorySchema>;
 export type RunBudgetState = z.infer<typeof RunBudgetStateSchema>;
 export type HarnessStatus = z.infer<typeof HarnessStatusSchema>;
@@ -928,16 +1109,30 @@ export type ApiKeyRecord = z.infer<typeof ApiKeyRecordSchema>;
 export type HeadlessSessionRecord = z.infer<typeof HeadlessSessionRecordSchema>;
 export type HeadlessMessageRecord = z.infer<typeof HeadlessMessageRecordSchema>;
 export type HeadlessRunRecord = z.infer<typeof HeadlessRunRecordSchema>;
-export type HeadlessApprovalRecord = z.infer<typeof HeadlessApprovalRecordSchema>;
+export type HeadlessApprovalRecord = z.infer<
+  typeof HeadlessApprovalRecordSchema
+>;
 export type HeadlessEvent = z.infer<typeof HeadlessEventSchema>;
 export type HeadlessJob = z.infer<typeof HeadlessJobSchema>;
-export type HeadlessSessionCreateInput = z.infer<typeof HeadlessSessionCreateInputSchema>;
-export type HeadlessSessionResponse = z.infer<typeof HeadlessSessionResponseSchema>;
-export type HeadlessSessionSummary = z.infer<typeof HeadlessSessionSummarySchema>;
-export type HeadlessMessageCreateInput = z.infer<typeof HeadlessMessageCreateInputSchema>;
-export type HeadlessMessageResponse = z.infer<typeof HeadlessMessageResponseSchema>;
+export type HeadlessSessionCreateInput = z.infer<
+  typeof HeadlessSessionCreateInputSchema
+>;
+export type HeadlessSessionResponse = z.infer<
+  typeof HeadlessSessionResponseSchema
+>;
+export type HeadlessSessionSummary = z.infer<
+  typeof HeadlessSessionSummarySchema
+>;
+export type HeadlessMessageCreateInput = z.infer<
+  typeof HeadlessMessageCreateInputSchema
+>;
+export type HeadlessMessageResponse = z.infer<
+  typeof HeadlessMessageResponseSchema
+>;
 export type HeadlessRunResponse = z.infer<typeof HeadlessRunResponseSchema>;
-export type HeadlessApprovalDecisionInput = z.infer<typeof HeadlessApprovalDecisionInputSchema>;
+export type HeadlessApprovalDecisionInput = z.infer<
+  typeof HeadlessApprovalDecisionInputSchema
+>;
 export type HarnessRunState = z.infer<typeof HarnessRunStateSchema>;
 export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
 export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;
@@ -952,12 +1147,16 @@ export type PromptContextSection = z.infer<typeof PromptContextSectionSchema>;
 export type PromptContextPayload = z.infer<typeof PromptContextPayloadSchema>;
 export type PromptAttestation = z.infer<typeof PromptAttestationSchema>;
 export type PromptEnvelope = z.infer<typeof PromptEnvelopeSchema>;
-export type ConfidentialArtifactPolicy = z.infer<typeof ConfidentialArtifactPolicySchema>;
+export type ConfidentialArtifactPolicy = z.infer<
+  typeof ConfidentialArtifactPolicySchema
+>;
 export type ChatEventType = z.infer<typeof ChatEventTypeSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
 export type LLMTokenCount = z.infer<typeof LLMTokenCountSchema>;
 export type TokenUsageSnapshot = z.infer<typeof TokenUsageSnapshotSchema>;
-export type LLMUsageTelemetryDetails = z.infer<typeof LLMUsageTelemetryDetailsSchema>;
+export type LLMUsageTelemetryDetails = z.infer<
+  typeof LLMUsageTelemetryDetailsSchema
+>;
 export type LLMRoleOverride = z.infer<typeof LLMRoleOverrideSchema>;
 export type Settings = z.infer<typeof SettingsSchema>;

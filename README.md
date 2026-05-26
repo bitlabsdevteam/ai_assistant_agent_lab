@@ -97,6 +97,8 @@ Per-surface provider selection:
 - Headless API message sends: `POST /v1/sessions/:id/messages` with optional per-run `provider` and `model`
 - SDK: `sessions.create({ provider, model })` and `chat.sendMessage(sessionId, { provider, model, ... })`
 
+The headless API and SDK message surfaces also accept an optional `editorContext` payload. It carries active-file, selection, visible-range, open-file, recent-file, and diagnostic state from an IDE or external host. Argus uses that payload to build trusted `Editor focus` and `Local code neighborhood` prompt sections, then optionally expands broader workspace context through a local incremental index under `.little-helper/runs/editor-index/`.
+
 ## Execution Model
 
 The executor now uses a typed action-selection loop per plan step:
@@ -107,6 +109,8 @@ The executor now uses a typed action-selection loop per plan step:
 - model-supplied tool inputs can override defaults, but the runtime falls back to deterministic input construction when fields are omitted
 
 This keeps side effects inside the typed tool layer while moving execution closer to the ReAct-style runtime described in `AGENTS.MD`.
+
+Editor context retrieval is additive only. Pre-prompt retrieval may broaden workspace context, but analyzer, executor, and evaluator still use the built-in `fs.*` and search tools during the run instead of treating retrieval as a tool replacement.
 
 ## Usage
 

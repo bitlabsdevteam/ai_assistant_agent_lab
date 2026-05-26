@@ -54,34 +54,53 @@ export interface PromptArtifactRecord {
 const PROMPT_BROKER_ID = "argus.prompt-broker";
 const DEFAULT_CORE_PROMPT_VERSION = "sealed-core-fallback-v1";
 const DEFAULT_POLICY_VERSION = "runtime-policy-v1";
-const DEFAULT_CONFIDENTIAL_ARTIFACT_POLICY = ConfidentialArtifactPolicySchema.parse({
-  persistPromptBodies: false,
-  persistPromptHashes: true,
-  allowAdminDecrypt: false,
-});
+const DEFAULT_CONFIDENTIAL_ARTIFACT_POLICY =
+  ConfidentialArtifactPolicySchema.parse({
+    persistPromptBodies: false,
+    persistPromptHashes: true,
+    allowAdminDecrypt: false,
+  });
 
 const resolvedPromptBodies = new Map<string, { instructions: string }>();
 
 export function buildAnalyzerPromptEnvelope(
   request: RunRequest,
-  availableTools: Array<{ name: string; description: string; sideEffecting: boolean; category: string }>,
+  availableTools: Array<{
+    name: string;
+    description: string;
+    sideEffecting: boolean;
+    category: string;
+  }>,
   contextSnapshot: AgentContextSnapshot | undefined,
   runtimePolicy: PromptRuntimePolicyInput,
   contextCompactionMode: ContextCompactionMode = "full",
 ): PromptEnvelope {
-  const visibleAppendText = renderSelectedSkills(request, { includeBody: true });
+  const visibleAppendText = renderSelectedSkills(request, {
+    includeBody: true,
+  });
+  const snapshotSections = toPromptSections(
+    contextSnapshot,
+    contextCompactionMode,
+    ["instruction-hierarchy", "user-task"],
+  );
   const contextPayload = createContextPayload(
     [
       createSection("User task", "trusted", request.task),
-      createSection("Tool catalog", "trusted", renderToolCatalog(availableTools)),
-      createSection("Chat context", "trusted", renderChatContext(request)),
-      ...snapshotToPromptSections(contextSnapshot, contextCompactionMode).map((section) =>
-        createSection(section.label, section.trustLevel, section.text),
+      ...snapshotSections,
+      createSection(
+        "Tool catalog",
+        "trusted",
+        renderToolCatalog(availableTools),
       ),
     ],
     contextSnapshot,
   );
-  return createPromptEnvelope("analyzer", visibleAppendText, contextPayload, runtimePolicy);
+  return createPromptEnvelope(
+    "analyzer",
+    visibleAppendText,
+    contextPayload,
+    runtimePolicy,
+  );
 }
 
 export function buildExecutorPromptEnvelope(
@@ -94,9 +113,17 @@ export function buildExecutorPromptEnvelope(
   runtimePolicy: PromptRuntimePolicyInput,
   contextCompactionMode: ContextCompactionMode = "full",
 ): PromptEnvelope {
-  const visibleAppendText = renderSelectedSkills(request, { includeBody: true });
+  const visibleAppendText = renderSelectedSkills(request, {
+    includeBody: true,
+  });
+  const snapshotSections = toPromptSections(
+    contextSnapshot,
+    contextCompactionMode,
+    ["instruction-hierarchy", "user-task"],
+  );
   const contextPayload = createContextPayload(
     [
+      createSection("User task", "trusted", request.task),
       createSection(
         "Execution objective",
         "trusted",
@@ -109,24 +136,34 @@ export function buildExecutorPromptEnvelope(
           `Observation: ${observation ?? `Starting step '${step.title}'.`}`,
         ].join("\n"),
       ),
+      ...snapshotSections,
       createSection(
         "Step memory",
         "untrusted_context",
-        stepMemory ? JSON.stringify(stepMemory, null, 2) : "No step memory recorded yet.",
-      ),
-      ...snapshotToPromptSections(contextSnapshot, contextCompactionMode).map((section) =>
-        createSection(section.label, section.trustLevel, section.text),
+        stepMemory
+          ? JSON.stringify(stepMemory, null, 2)
+          : "No step memory recorded yet.",
       ),
     ],
     contextSnapshot,
   );
-  return createPromptEnvelope("executor", visibleAppendText, contextPayload, runtimePolicy);
+  return createPromptEnvelope(
+    "executor",
+    visibleAppendText,
+    contextPayload,
+    runtimePolicy,
+  );
 }
 
 export function buildEvaluatorPromptEnvelope(
   request: RunRequest,
   analysis: AnalysisResult,
-  execution: { summary: string; blockers: string[]; changedFiles: string[]; completedSteps: string[] },
+  execution: {
+    summary: string;
+    blockers: string[];
+    changedFiles: string[];
+    completedSteps: string[];
+  },
   contextSnapshot: AgentContextSnapshot | undefined,
   runtimePolicy: PromptRuntimePolicyInput,
   contextCompactionMode: ContextCompactionMode = "full",
@@ -134,8 +171,14 @@ export function buildEvaluatorPromptEnvelope(
   const visibleAppendText = renderSelectedSkills(request, {
     includeBody: shouldIncludeSkillBodyForEvaluator(request),
   });
+  const snapshotSections = toPromptSections(
+    contextSnapshot,
+    contextCompactionMode,
+    ["instruction-hierarchy", "user-task"],
+  );
   const contextPayload = createContextPayload(
     [
+      createSection("User task", "trusted", request.task),
       createSection(
         "Evaluation target",
         "trusted",
@@ -144,6 +187,7 @@ export function buildEvaluatorPromptEnvelope(
           `Success criteria: ${analysis.successCriteria.join("; ") || "none"}`,
         ].join("\n"),
       ),
+      ...snapshotSections,
       createSection(
         "Execution evidence",
         "untrusted_context",
@@ -154,20 +198,28 @@ export function buildEvaluatorPromptEnvelope(
           `Blockers: ${execution.blockers.join("; ") || "none"}`,
         ].join("\n"),
       ),
-      ...snapshotToPromptSections(contextSnapshot, contextCompactionMode).map((section) =>
-        createSection(section.label, section.trustLevel, section.text),
-      ),
     ],
     contextSnapshot,
   );
-  return createPromptEnvelope("evaluator", visibleAppendText, contextPayload, runtimePolicy);
+  return createPromptEnvelope(
+    "evaluator",
+    visibleAppendText,
+    contextPayload,
+    runtimePolicy,
+  );
 }
 
-export function renderPromptEnvelopeForTransport(envelope: PromptEnvelope, input: unknown): PromptTransportPayload {
+export function renderPromptEnvelopeForTransport(
+  envelope: PromptEnvelope,
+  input: unknown,
+): PromptTransportPayload {
   const key = buildPromptKey(envelope);
   const resolved = resolvedPromptBodies.get(key);
   if (!resolved) {
-    throw new AppError("VALIDATION_ERROR", `Protected prompt material is unavailable for ${envelope.agent}.`);
+    throw new AppError(
+      "VALIDATION_ERROR",
+      `Protected prompt material is unavailable for ${envelope.agent}.`,
+    );
   }
 
   const inputText = renderPromptInput(envelope, input);
@@ -178,7 +230,9 @@ export function renderPromptEnvelopeForTransport(envelope: PromptEnvelope, input
   };
 }
 
-export function buildPromptArtifactRecord(envelope: PromptEnvelope): PromptArtifactRecord {
+export function buildPromptArtifactRecord(
+  envelope: PromptEnvelope,
+): PromptArtifactRecord {
   return {
     agent: envelope.agent,
     corePromptVersion: envelope.corePromptRef.version,
@@ -204,8 +258,16 @@ function createPromptEnvelope(
   const assembledAt = new Date().toISOString();
   const coreInstructions = loadCorePrompt(agent);
   const policyOverlay = buildPolicyOverlay(agent, runtimePolicy);
-  const corePromptRef = buildProtectedPromptRef(agent, "sealed_core", coreInstructions);
-  const policyOverlayRef = buildProtectedPromptRef(agent, "runtime_policy", policyOverlay);
+  const corePromptRef = buildProtectedPromptRef(
+    agent,
+    "sealed_core",
+    coreInstructions,
+  );
+  const policyOverlayRef = buildProtectedPromptRef(
+    agent,
+    "runtime_policy",
+    policyOverlay,
+  );
   const attestation = {
     corePromptHash: corePromptRef.hash,
     policyHash: policyOverlayRef.hash,
@@ -235,7 +297,10 @@ function buildProtectedPromptRef(
 ): ProtectedPromptRef {
   return {
     id: scope === "sealed_core" ? `core/${agent}` : `policy/${agent}`,
-    version: scope === "sealed_core" ? resolveCorePromptVersion(agent) : DEFAULT_POLICY_VERSION,
+    version:
+      scope === "sealed_core"
+        ? resolveCorePromptVersion(agent)
+        : DEFAULT_POLICY_VERSION,
     hash: hashText(body),
     scope,
     createdAt: new Date().toISOString(),
@@ -243,12 +308,16 @@ function buildProtectedPromptRef(
 }
 
 function resolveCorePromptVersion(agent: AgentRole): string {
-  const envValue = process.env[`LITTLE_HELPER_CORE_PROMPT_VERSION_${agent.toUpperCase()}`];
-  return envValue && envValue.trim().length > 0 ? envValue.trim() : DEFAULT_CORE_PROMPT_VERSION;
+  const envValue =
+    process.env[`LITTLE_HELPER_CORE_PROMPT_VERSION_${agent.toUpperCase()}`];
+  return envValue && envValue.trim().length > 0
+    ? envValue.trim()
+    : DEFAULT_CORE_PROMPT_VERSION;
 }
 
 function loadCorePrompt(agent: AgentRole): string {
-  const envValue = process.env[`LITTLE_HELPER_CORE_PROMPT_${agent.toUpperCase()}`];
+  const envValue =
+    process.env[`LITTLE_HELPER_CORE_PROMPT_${agent.toUpperCase()}`];
   if (envValue && envValue.trim().length > 0) {
     return envValue.trim();
   }
@@ -278,7 +347,10 @@ function loadCorePrompt(agent: AgentRole): string {
   }
 }
 
-function buildPolicyOverlay(agent: AgentRole, runtimePolicy: PromptRuntimePolicyInput): string {
+function buildPolicyOverlay(
+  agent: AgentRole,
+  runtimePolicy: PromptRuntimePolicyInput,
+): string {
   return [
     "Runtime policy overlay:",
     `- Agent role: ${agent}`,
@@ -296,18 +368,24 @@ function createContextPayload(
   sections: PromptContextSection[],
   contextSnapshot: AgentContextSnapshotType | undefined,
 ): PromptContextPayload {
-  const filteredSections = sections.filter((section) => section.text.trim().length > 0);
+  const filteredSections = sections.filter(
+    (section) => section.text.trim().length > 0,
+  );
   return {
     sections: filteredSections,
     sourceRefs: collectContextSourceRefs(contextSnapshot),
   };
 }
 
-function collectContextSourceRefs(contextSnapshot: AgentContextSnapshotType | undefined): string[] {
+function collectContextSourceRefs(
+  contextSnapshot: AgentContextSnapshotType | undefined,
+): string[] {
   if (!contextSnapshot) {
     return [];
   }
-  const refs = contextSnapshot.sources.map((source) => source.artifact ?? `${source.kind}:${source.label}`);
+  const refs = contextSnapshot.sources.map(
+    (source) => source.artifact ?? `${source.kind}:${source.label}`,
+  );
   return [...new Set(refs)];
 }
 
@@ -326,18 +404,29 @@ function renderPromptInput(envelope: PromptEnvelope, input: unknown): string {
 
 function renderContextPayload(payload: PromptContextPayload): string {
   return payload.sections
-    .map((section) => `## [${section.trustLevel}] ${section.label}\n${section.text}`)
+    .map(
+      (section) =>
+        `## [${section.trustLevel}] ${section.label}\n${section.text}`,
+    )
     .join("\n\n");
 }
 
 function renderToolCatalog(
-  availableTools: Array<{ name: string; description: string; sideEffecting: boolean; category: string }>,
+  availableTools: Array<{
+    name: string;
+    description: string;
+    sideEffecting: boolean;
+    category: string;
+  }>,
 ): string {
   if (availableTools.length === 0) {
     return "No tools registered.";
   }
   return availableTools
-    .map((tool) => `${tool.name} [${tool.category}${tool.sideEffecting ? ", side-effecting" : ""}]: ${tool.description}`)
+    .map(
+      (tool) =>
+        `${tool.name} [${tool.category}${tool.sideEffecting ? ", side-effecting" : ""}]: ${tool.description}`,
+    )
     .join("\n");
 }
 
@@ -352,6 +441,19 @@ function renderChatContext(request: RunRequest): string {
     `Conversation summary: ${chat.conversationSummary || "none"}`,
     `Last assistant summary: ${chat.lastAssistantSummary ?? "none"}`,
   ].join("\n");
+}
+
+function toPromptSections(
+  contextSnapshot: AgentContextSnapshot | undefined,
+  mode: ContextCompactionMode,
+  excludedIds: string[],
+): PromptContextSection[] {
+  const excluded = new Set(excludedIds);
+  return snapshotToPromptSections(contextSnapshot, mode)
+    .filter((section) => !excluded.has(section.id))
+    .map((section) =>
+      createSection(section.label, section.trustLevel, section.text),
+    );
 }
 
 function renderSelectedSkills(
@@ -372,15 +474,22 @@ function renderSelectedSkills(
         `  Why: ${skill.reasons.map((reason) => reason.detail).join("; ")}`,
         `  Tool hints: ${skill.tools.join(", ") || "none"}`,
         `  Description: ${skill.description}`,
-        ...(options.includeBody ? [`  Instructions:\n${indentBlock(skill.instructions, "    ")}`] : []),
+        ...(options.includeBody
+          ? [`  Instructions:\n${indentBlock(skill.instructions, "    ")}`]
+          : []),
       ].join("\n"),
     ),
   ].join("\n");
 }
 
-function shouldIncludeSkillBodyForEvaluator(request?: Pick<RunRequest, "selectedSkills">): boolean {
+function shouldIncludeSkillBodyForEvaluator(
+  request?: Pick<RunRequest, "selectedSkills">,
+): boolean {
   const skills = request?.selectedSkills ?? [];
-  const totalChars = skills.reduce((sum, skill) => sum + skill.instructions.length, 0);
+  const totalChars = skills.reduce(
+    (sum, skill) => sum + skill.instructions.length,
+    0,
+  );
   return totalChars <= 1_200;
 }
 

@@ -5,7 +5,9 @@ import {
   AnalysisResultSchema,
   ChatSessionStateSchema,
   ChatTurnRecordSchema,
+  EditorContextSchema,
   ExecutorActionSchema,
+  RetrievedContextChunkSchema,
   HarnessRunStateSchema,
   InteractiveSessionStateSchema,
   RunBudgetStateSchema,
@@ -18,11 +20,65 @@ describe("schemas", () => {
     const result = RunRequestSchema.parse({
       task: "Create file hello.txt with content hello",
       workingDirectory: "/tmp/workspace",
+      editorContext: {
+        workspaceId: "workspace-1",
+        activeFile: "src/index.ts",
+        selection: {
+          start: { line: 10, column: 3 },
+          end: { line: 12, column: 1 },
+        },
+      },
     });
 
     expect(result.profile).toBe("default");
     expect(result.dryRun).toBe(false);
     expect(result.maxIterations).toBe(3);
+    expect(result.editorContext?.visibleRanges).toEqual([]);
+    expect(result.editorContext?.retrieval.maxChunks).toBe(4);
+  });
+
+  it("validates editor context payloads and retrieval provenance", () => {
+    const editorContext = EditorContextSchema.parse({
+      workspaceId: "workspace-1",
+      activeFile: "src/example.ts",
+      selection: {
+        start: { offset: 10 },
+        end: { offset: 42 },
+        selectedText: "function example() {}",
+      },
+      diagnostics: [
+        {
+          filePath: "src/example.ts",
+          severity: "warning",
+          message: "unused function",
+        },
+      ],
+    });
+    const chunk = RetrievedContextChunkSchema.parse({
+      chunkId: "chunk-1",
+      filePath: "/tmp/workspace/src/example.ts",
+      startLine: 5,
+      endLine: 15,
+      excerpt: "function example() {}",
+      scores: {
+        direct: 1,
+        symbol: 0.5,
+        path: 0,
+        lexical: 0.5,
+        semantic: 0.25,
+        total: 7.25,
+      },
+      provenance: {
+        kind: "symbol_hit",
+        workspaceId: "workspace-1",
+        query: "example function",
+        matchedTerms: ["example", "function"],
+        matchedSymbol: "example",
+      },
+    });
+
+    expect(editorContext.retrieval.enabled).toBe(true);
+    expect(chunk.provenance.kind).toBe("symbol_hit");
   });
 
   it("validates analysis results", () => {
@@ -129,7 +185,9 @@ describe("schemas", () => {
   });
 
   it("converts executor action discriminated unions for OpenAI structured outputs", () => {
-    expect(zodToJsonSchema(ExecutorActionSchema, "executor_action")).toMatchObject({
+    expect(
+      zodToJsonSchema(ExecutorActionSchema, "executor_action"),
+    ).toMatchObject({
       $schema: "https://json-schema.org/draft/2020-12/schema",
       title: "executor_action",
       anyOf: expect.arrayContaining([

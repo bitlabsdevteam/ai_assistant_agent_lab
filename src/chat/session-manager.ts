@@ -10,6 +10,7 @@ import {
   type ApprovalRequest,
   type ChatSessionState,
   type ChatTurnRecord,
+  type EditorContext,
   type HarnessStatus,
   type InteractiveSessionState,
   type LLMProvider,
@@ -37,6 +38,7 @@ export interface PrepareChatTurnInput {
   profile: string;
   dryRun: boolean;
   maxIterations: number;
+  editorContext?: EditorContext;
 }
 
 export interface PreparedChatTurn {
@@ -73,7 +75,9 @@ export class ChatSessionManager {
     } = {},
   ) {}
 
-  public async createSession(input: CreateChatSessionInput): Promise<ChatSessionState> {
+  public async createSession(
+    input: CreateChatSessionInput,
+  ): Promise<ChatSessionState> {
     const now = this.timestamp();
     const session = ChatSessionStateSchema.parse({
       sessionId: createRunId(this.now()),
@@ -92,7 +96,9 @@ export class ChatSessionManager {
         sessionId: session.sessionId,
         updatedAt: now,
         mode: input.mode ?? "suggest",
-        ...(input.selectedProvider ? { selectedProvider: input.selectedProvider } : {}),
+        ...(input.selectedProvider
+          ? { selectedProvider: input.selectedProvider }
+          : {}),
         ...(input.selectedModel ? { selectedModel: input.selectedModel } : {}),
         recentActivitySummary: "",
       }),
@@ -106,8 +112,13 @@ export class ChatSessionManager {
     return ChatSessionStateSchema.parse(JSON.parse(raw));
   }
 
-  public async loadInteractiveState(sessionId: string): Promise<InteractiveSessionState> {
-    const raw = await readFile(this.resolveInteractiveStateFile(sessionId), "utf8");
+  public async loadInteractiveState(
+    sessionId: string,
+  ): Promise<InteractiveSessionState> {
+    const raw = await readFile(
+      this.resolveInteractiveStateFile(sessionId),
+      "utf8",
+    );
     return InteractiveSessionStateSchema.parse(JSON.parse(raw));
   }
 
@@ -115,7 +126,10 @@ export class ChatSessionManager {
     const root = path.join(this.artifactDir, "chat");
     try {
       const entries = await readdir(root, { withFileTypes: true });
-      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+      return entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
     } catch {
       return [];
     }
@@ -135,10 +149,14 @@ export class ChatSessionManager {
 
   public async listRunIds(sessionId: string): Promise<string[]> {
     const turns = await this.listTurns(sessionId);
-    return [...new Set(turns.flatMap((turn) => (turn.runId ? [turn.runId] : [])))];
+    return [
+      ...new Set(turns.flatMap((turn) => (turn.runId ? [turn.runId] : []))),
+    ];
   }
 
-  public async prepareTurn(input: PrepareChatTurnInput): Promise<PreparedChatTurn> {
+  public async prepareTurn(
+    input: PrepareChatTurnInput,
+  ): Promise<PreparedChatTurn> {
     const session = await this.refreshSession(input.sessionId);
     const interactive = await this.loadInteractiveState(input.sessionId);
     const timestamp = this.timestamp();
@@ -165,7 +183,11 @@ export class ChatSessionManager {
       pendingPatchArtifact: undefined,
       recentActivitySummary: summarizeContent(trimmed),
     });
-    const context = await this.buildConversationContext(updatedSession.sessionId, turnId, trimmed);
+    const context = await this.buildConversationContext(
+      updatedSession.sessionId,
+      turnId,
+      trimmed,
+    );
     const request = {
       task: trimmed,
       workingDirectory: updatedSession.workingDirectory,
@@ -173,12 +195,17 @@ export class ChatSessionManager {
       dryRun: input.dryRun,
       maxIterations: input.maxIterations,
       selectedSkills: [],
+      ...(input.editorContext ? { editorContext: input.editorContext } : {}),
       metadata: {
         sessionId: updatedSession.sessionId,
         turnId,
         sessionMode: interactive.mode,
-        ...(interactive.selectedProvider ? { selectedProvider: interactive.selectedProvider } : {}),
-        ...(interactive.selectedModel ? { selectedModel: interactive.selectedModel } : {}),
+        ...(interactive.selectedProvider
+          ? { selectedProvider: interactive.selectedProvider }
+          : {}),
+        ...(interactive.selectedModel
+          ? { selectedModel: interactive.selectedModel }
+          : {}),
       },
       conversationContext: context,
     } satisfies RunRequest;
@@ -190,7 +217,9 @@ export class ChatSessionManager {
     };
   }
 
-  public async completeTurn(input: CompleteChatTurnInput): Promise<ChatSessionState> {
+  public async completeTurn(
+    input: CompleteChatTurnInput,
+  ): Promise<ChatSessionState> {
     const assistantTurn = ChatTurnRecordSchema.parse({
       turnId: createRunId(this.now()),
       role: "assistant",
@@ -204,7 +233,9 @@ export class ChatSessionManager {
     const session = await this.recomputeSession(input.sessionId, {
       status: deriveSessionStatus(input.runStatus),
       activeRunId:
-        input.runStatus === "awaiting_approval" || input.runStatus === "blocked" ? input.runId : undefined,
+        input.runStatus === "awaiting_approval" || input.runStatus === "blocked"
+          ? input.runId
+          : undefined,
       lastRunStatus: input.runStatus,
     });
     const interactive = await this.loadInteractiveState(input.sessionId);
@@ -212,8 +243,13 @@ export class ChatSessionManager {
       ...interactive,
       updatedAt: this.timestamp(),
       activeRunId:
-        input.runStatus === "awaiting_approval" || input.runStatus === "blocked" ? input.runId : undefined,
-      pendingPatchArtifact: await this.findPendingPatchArtifact(input.sessionId, input.runId),
+        input.runStatus === "awaiting_approval" || input.runStatus === "blocked"
+          ? input.runId
+          : undefined,
+      pendingPatchArtifact: await this.findPendingPatchArtifact(
+        input.sessionId,
+        input.runId,
+      ),
       recentActivitySummary: summarizeContent(input.assistantSummary),
       ...(input.latestTokenUsageLine
         ? { latestTokenUsageLine: input.latestTokenUsageLine }
@@ -247,7 +283,11 @@ export class ChatSessionManager {
     return session;
   }
 
-  public async recordSystemTurn(sessionId: string, content: string, summary?: string): Promise<ChatSessionState> {
+  public async recordSystemTurn(
+    sessionId: string,
+    content: string,
+    summary?: string,
+  ): Promise<ChatSessionState> {
     const turn = ChatTurnRecordSchema.parse({
       turnId: createRunId(this.now()),
       role: "system",
@@ -273,12 +313,18 @@ export class ChatSessionManager {
       ...interactive,
       updatedAt: this.timestamp(),
       activeRunId: session.activeRunId,
-      pendingPatchArtifact: await this.findPendingPatchArtifact(sessionId, session.activeRunId),
+      pendingPatchArtifact: await this.findPendingPatchArtifact(
+        sessionId,
+        session.activeRunId,
+      ),
     });
     return session;
   }
 
-  public async setMode(sessionId: string, mode: OperatorMode): Promise<InteractiveSessionState> {
+  public async setMode(
+    sessionId: string,
+    mode: OperatorMode,
+  ): Promise<InteractiveSessionState> {
     const current = await this.loadInteractiveState(sessionId);
     const next = InteractiveSessionStateSchema.parse({
       ...current,
@@ -297,13 +343,18 @@ export class ChatSessionManager {
     const next = InteractiveSessionStateSchema.parse({
       ...current,
       updatedAt: this.timestamp(),
-      ...(selectedProvider ? { selectedProvider } : { selectedProvider: undefined }),
+      ...(selectedProvider
+        ? { selectedProvider }
+        : { selectedProvider: undefined }),
     });
     await this.persistInteractiveState(next);
     return next;
   }
 
-  public async setSelectedModel(sessionId: string, selectedModel?: string): Promise<InteractiveSessionState> {
+  public async setSelectedModel(
+    sessionId: string,
+    selectedModel?: string,
+  ): Promise<InteractiveSessionState> {
     const current = await this.loadInteractiveState(sessionId);
     const next = InteractiveSessionStateSchema.parse({
       ...current,
@@ -314,18 +365,24 @@ export class ChatSessionManager {
     return next;
   }
 
-  public async listPendingApprovals(sessionId: string): Promise<PendingSessionApproval[]> {
+  public async listPendingApprovals(
+    sessionId: string,
+  ): Promise<PendingSessionApproval[]> {
     const runStore = new RunStore(this.artifactDir);
     const approvals = await Promise.all(
       (await this.listRunIds(sessionId)).map(async (runId) => {
-        const manager = new ApprovalManager(runStore.createArtifactStore(runId));
+        const manager = new ApprovalManager(
+          runStore.createArtifactStore(runId),
+        );
         const records = await manager.load();
         return records
           .filter((approval) => approval.status === "pending")
           .map((approval) => ({ ...approval, runId }));
       }),
     );
-    return approvals.flat().sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    return approvals
+      .flat()
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   public async decideApproval(
@@ -345,7 +402,10 @@ export class ChatSessionManager {
         await this.persistInteractiveState({
           ...interactive,
           updatedAt: this.timestamp(),
-          pendingPatchArtifact: await this.findPendingPatchArtifact(sessionId, runId),
+          pendingPatchArtifact: await this.findPendingPatchArtifact(
+            sessionId,
+            runId,
+          ),
           recentActivitySummary: `${status} approval ${approvalId}`,
         });
         return {
@@ -364,11 +424,17 @@ export class ChatSessionManager {
   ): Promise<NonNullable<RunRequest["conversationContext"]>> {
     const session = await this.loadSession(sessionId);
     const turns = await this.listTurns(sessionId);
-    const recentTurns = turns.slice(-this.recentTurnLimit()).map((turn) => ChatTurnRecordSchema.parse(turn));
+    const recentTurns = turns
+      .slice(-this.recentTurnLimit())
+      .map((turn) => ChatTurnRecordSchema.parse(turn));
     const lastAssistantSummary = [...turns]
       .reverse()
-      .find((turn) => turn.role === "assistant" && typeof turn.summary === "string")?.summary;
-    const includedArtifactRefs = [...new Set(recentTurns.flatMap((turn) => turn.artifactRefs))];
+      .find(
+        (turn) => turn.role === "assistant" && typeof turn.summary === "string",
+      )?.summary;
+    const includedArtifactRefs = [
+      ...new Set(recentTurns.flatMap((turn) => turn.artifactRefs)),
+    ];
     return {
       sessionId,
       turnId,
@@ -386,7 +452,9 @@ export class ChatSessionManager {
 
   private async recomputeSession(
     sessionId: string,
-    overrides: Partial<Pick<ChatSessionState, "status" | "activeRunId" | "lastRunStatus">>,
+    overrides: Partial<
+      Pick<ChatSessionState, "status" | "activeRunId" | "lastRunStatus">
+    >,
   ): Promise<ChatSessionState> {
     const current = await this.loadSession(sessionId);
     const turns = await this.listTurns(sessionId);
@@ -411,8 +479,8 @@ export class ChatSessionManager {
             : (overrides.status ?? current.status),
       activeRunId:
         pendingApprovals.length > 0
-          ? overrides.activeRunId ?? current.activeRunId
-          : overrides.activeRunId ?? undefined,
+          ? (overrides.activeRunId ?? current.activeRunId)
+          : (overrides.activeRunId ?? undefined),
       lastRunStatus: overrides.lastRunStatus ?? current.lastRunStatus,
     });
     await this.persistSession(next);
@@ -420,27 +488,49 @@ export class ChatSessionManager {
     return next;
   }
 
-  private async appendTurnRecord(sessionId: string, turn: ChatTurnRecord): Promise<void> {
+  private async appendTurnRecord(
+    sessionId: string,
+    turn: ChatTurnRecord,
+  ): Promise<void> {
     await this.ensureSessionDirectory(sessionId);
-    await writeFile(this.resolveTurnsFile(sessionId), `${JSON.stringify(turn)}\n`, {
-      encoding: "utf8",
-      flag: "a",
-    });
+    await writeFile(
+      this.resolveTurnsFile(sessionId),
+      `${JSON.stringify(turn)}\n`,
+      {
+        encoding: "utf8",
+        flag: "a",
+      },
+    );
   }
 
   private async persistSession(session: ChatSessionState): Promise<void> {
     await this.ensureSessionDirectory(session.sessionId);
-    await writeFile(this.resolveSessionFile(session.sessionId), JSON.stringify(session, null, 2), "utf8");
+    await writeFile(
+      this.resolveSessionFile(session.sessionId),
+      JSON.stringify(session, null, 2),
+      "utf8",
+    );
   }
 
-  private async persistInteractiveState(state: InteractiveSessionState): Promise<void> {
+  private async persistInteractiveState(
+    state: InteractiveSessionState,
+  ): Promise<void> {
     await this.ensureSessionDirectory(state.sessionId);
-    await writeFile(this.resolveInteractiveStateFile(state.sessionId), JSON.stringify(state, null, 2), "utf8");
+    await writeFile(
+      this.resolveInteractiveStateFile(state.sessionId),
+      JSON.stringify(state, null, 2),
+      "utf8",
+    );
   }
 
-  private async writeSummary(sessionId: string, summary: string): Promise<void> {
+  private async writeSummary(
+    sessionId: string,
+    summary: string,
+  ): Promise<void> {
     const rendered =
-      summary.length > 0 ? `# Conversation Summary\n\n${summary}\n` : "# Conversation Summary\n\n_No summary yet._\n";
+      summary.length > 0
+        ? `# Conversation Summary\n\n${summary}\n`
+        : "# Conversation Summary\n\n_No summary yet._\n";
     await writeFile(this.resolveSummaryFile(sessionId), rendered, "utf8");
   }
 
@@ -453,7 +543,10 @@ export class ChatSessionManager {
   }
 
   private resolveInteractiveStateFile(sessionId: string): string {
-    return path.join(this.resolveSessionDirectory(sessionId), "interactive-session.json");
+    return path.join(
+      this.resolveSessionDirectory(sessionId),
+      "interactive-session.json",
+    );
   }
 
   private resolveTurnsFile(sessionId: string): string {
@@ -464,8 +557,13 @@ export class ChatSessionManager {
     return path.join(this.resolveSessionDirectory(sessionId), "summary.md");
   }
 
-  private async findPendingPatchArtifact(sessionId: string, preferredRunId?: string): Promise<string | undefined> {
-    const runIds = preferredRunId ? [preferredRunId] : await this.listRunIds(sessionId);
+  private async findPendingPatchArtifact(
+    sessionId: string,
+    preferredRunId?: string,
+  ): Promise<string | undefined> {
+    const runIds = preferredRunId
+      ? [preferredRunId]
+      : await this.listRunIds(sessionId);
     for (const runId of [...runIds].reverse()) {
       const artifactsDir = path.join(this.artifactDir, runId, "artifacts");
       try {
@@ -485,7 +583,9 @@ export class ChatSessionManager {
   }
 
   private compactionThreshold(): number {
-    return this.options.compactionThresholdChars ?? DEFAULT_COMPACTION_THRESHOLD;
+    return (
+      this.options.compactionThresholdChars ?? DEFAULT_COMPACTION_THRESHOLD
+    );
   }
 
   private recentTurnLimit(): number {
@@ -501,7 +601,9 @@ export class ChatSessionManager {
   }
 }
 
-function deriveSessionStatus(runStatus: HarnessStatus): ChatSessionState["status"] {
+function deriveSessionStatus(
+  runStatus: HarnessStatus,
+): ChatSessionState["status"] {
   if (runStatus === "awaiting_approval") {
     return "awaiting_approval";
   }
@@ -518,13 +620,22 @@ function buildConversationSummary(
   recentTurnLimit: number,
 ): string {
   const transcript = turns
-    .map((turn) => `${turn.role}: ${turn.summary ?? summarizeContent(turn.content)}`)
+    .map(
+      (turn) =>
+        `${turn.role}: ${turn.summary ?? summarizeContent(turn.content)}`,
+    )
     .join("\n");
   if (transcript.length <= thresholdChars) {
     return previousSummary;
   }
-  const compactedTurns = turns.slice(0, Math.max(0, turns.length - recentTurnLimit));
-  const summaryLines = compactedTurns.map((turn) => `- ${turn.role}: ${turn.summary ?? summarizeContent(turn.content)}`);
+  const compactedTurns = turns.slice(
+    0,
+    Math.max(0, turns.length - recentTurnLimit),
+  );
+  const summaryLines = compactedTurns.map(
+    (turn) =>
+      `- ${turn.role}: ${turn.summary ?? summarizeContent(turn.content)}`,
+  );
   return summaryLines.join("\n");
 }
 

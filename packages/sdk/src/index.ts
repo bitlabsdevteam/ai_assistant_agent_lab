@@ -1,4 +1,10 @@
-export type ClientRunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "blocked";
+export type ClientRunStatus =
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "blocked";
 export type ClientApprovalDecision = "approved" | "denied";
 export type ClientLLMProvider = "openai" | "anthropic" | "gemini" | "moonshot";
 export type ClientStreamEventType =
@@ -57,11 +63,52 @@ export interface MessageRecord {
   runId?: string;
 }
 
+export interface EditorLocation {
+  offset?: number;
+  line?: number;
+  column?: number;
+}
+
+export interface EditorRange {
+  start: EditorLocation;
+  end: EditorLocation;
+}
+
+export interface EditorSelection extends EditorRange {
+  selectedText?: string;
+}
+
+export interface EditorDiagnostic {
+  filePath: string;
+  severity?: "error" | "warning" | "info" | "hint";
+  message: string;
+  code?: string;
+  source?: string;
+  range?: EditorRange;
+}
+
+export interface EditorContext {
+  workspaceId: string;
+  activeFile?: string;
+  selection?: EditorSelection;
+  visibleRanges?: EditorRange[];
+  openFiles?: string[];
+  recentFiles?: string[];
+  diagnostics?: EditorDiagnostic[];
+  snapshotVersion?: string;
+  timestamp?: string;
+  retrieval?: {
+    enabled?: boolean;
+    maxChunks?: number;
+  };
+}
+
 export interface MessageCreateInput {
   content: string;
   metadata?: Record<string, unknown>;
   provider?: ClientLLMProvider;
   model?: string;
+  editorContext?: EditorContext;
 }
 
 export interface MessageResponse {
@@ -134,13 +181,17 @@ export class ArgusClient {
         method: "POST",
         body: JSON.stringify(input),
       }),
-    get: async (sessionId: string): Promise<SessionSummary> => this.requestJson(`/v1/sessions/${sessionId}`),
+    get: async (sessionId: string): Promise<SessionSummary> =>
+      this.requestJson(`/v1/sessions/${sessionId}`),
     listMessages: async (sessionId: string): Promise<MessageRecord[]> =>
       this.requestJson(`/v1/sessions/${sessionId}/messages`),
   };
 
   public readonly chat = {
-    sendMessage: async (sessionId: string, input: MessageCreateInput): Promise<MessageResponse> =>
+    sendMessage: async (
+      sessionId: string,
+      input: MessageCreateInput,
+    ): Promise<MessageResponse> =>
       this.requestJson(`/v1/sessions/${sessionId}/messages`, {
         method: "POST",
         body: JSON.stringify(input),
@@ -154,25 +205,34 @@ export class ArgusClient {
       const terminalEvent = await this.runs.stream(message.runId, options);
       return terminalEvent
         ? {
-        message,
-        terminalEvent,
+            message,
+            terminalEvent,
           }
         : { message };
     },
   };
 
   public readonly runs = {
-    get: async (runId: string): Promise<RunResponse> => this.requestJson(`/v1/runs/${runId}`),
-    stream: async (runId: string, options: StreamOptions = {}): Promise<StreamEvent | undefined> => {
-      const response = await this.fetchImpl(this.resolvePath(`/v1/runs/${runId}/stream`), {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          Accept: "text/event-stream",
-          ...(options.lastEventId ? { "Last-Event-ID": options.lastEventId } : {}),
+    get: async (runId: string): Promise<RunResponse> =>
+      this.requestJson(`/v1/runs/${runId}`),
+    stream: async (
+      runId: string,
+      options: StreamOptions = {},
+    ): Promise<StreamEvent | undefined> => {
+      const response = await this.fetchImpl(
+        this.resolvePath(`/v1/runs/${runId}/stream`),
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            Accept: "text/event-stream",
+            ...(options.lastEventId
+              ? { "Last-Event-ID": options.lastEventId }
+              : {}),
+          },
+          signal: options.signal ?? null,
         },
-        signal: options.signal ?? null,
-      });
+      );
       if (!response.ok) {
         throw await buildRequestError(response);
       }
@@ -193,8 +253,12 @@ export class ArgusClient {
   };
 
   public readonly approvals = {
-    list: async (runId: string): Promise<ApprovalRecord[]> => this.requestJson(`/v1/runs/${runId}/approvals`),
-    decide: async (approvalId: string, decision: ClientApprovalDecision): Promise<ApprovalRecord> =>
+    list: async (runId: string): Promise<ApprovalRecord[]> =>
+      this.requestJson(`/v1/runs/${runId}/approvals`),
+    decide: async (
+      approvalId: string,
+      decision: ClientApprovalDecision,
+    ): Promise<ApprovalRecord> =>
       this.requestJson(`/v1/approvals/${approvalId}/decision`, {
         method: "POST",
         body: JSON.stringify({ decision }),
@@ -207,7 +271,10 @@ export class ArgusClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
-  private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async requestJson<T>(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<T> {
     const response = await this.fetchImpl(this.resolvePath(path), {
       ...init,
       headers: {
@@ -230,7 +297,9 @@ export class ArgusClient {
 export type LittleHelperClientOptions = ArgusClientOptions;
 export { ArgusClient as LittleHelperClient };
 
-async function* parseSseStream(response: Response): AsyncGenerator<StreamEvent> {
+async function* parseSseStream(
+  response: Response,
+): AsyncGenerator<StreamEvent> {
   if (!response.body) {
     return;
   }
@@ -281,5 +350,7 @@ async function buildRequestError(response: Response): Promise<Error> {
   } catch {
     body = await response.text();
   }
-  return new Error(`Request failed with ${response.status}: ${JSON.stringify(body)}`);
+  return new Error(
+    `Request failed with ${response.status}: ${JSON.stringify(body)}`,
+  );
 }

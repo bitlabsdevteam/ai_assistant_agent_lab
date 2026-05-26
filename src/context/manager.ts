@@ -1,4 +1,5 @@
 import type { ArtifactStore } from "../memory/artifact-store.js";
+import { expandEditorContext } from "./editor-context.js";
 import {
   AgentContextSnapshotSchema,
   type AgentContextSection,
@@ -29,9 +30,19 @@ export interface ContextAssemblyInput {
 export class ContextManager {
   public constructor(private readonly artifactStore: ArtifactStore) {}
 
-  public async assemble(input: ContextAssemblyInput): Promise<AgentContextSnapshot> {
-    const sections = buildContextSections(input);
-    const sources = buildContextSources(this.artifactStore, input);
+  public async assemble(
+    input: ContextAssemblyInput,
+  ): Promise<AgentContextSnapshot> {
+    const editorContext = await expandEditorContext(
+      input.request,
+      this.artifactStore,
+    );
+    const sections = buildContextSections(input, editorContext);
+    const sources = buildContextSources(
+      this.artifactStore,
+      input,
+      editorContext.sources,
+    );
     const rendered = renderSnapshotSections(sections, "full");
     const snapshot = AgentContextSnapshotSchema.parse({
       agent: input.agent,
@@ -49,12 +60,18 @@ export class ContextManager {
 
   private async persist(snapshot: AgentContextSnapshot): Promise<void> {
     await this.artifactStore.writeText("context-summary.md", snapshot.summary);
-    await this.artifactStore.writeJson("context-sources.json", snapshot.sources);
+    await this.artifactStore.writeJson(
+      "context-sources.json",
+      snapshot.sources,
+    );
     await this.artifactStore.writeJson("context-snapshot.json", snapshot);
   }
 }
 
-export function renderSnapshot(snapshot: AgentContextSnapshot, mode: ContextCompactionMode): AgentContextSnapshot {
+export function renderSnapshot(
+  snapshot: AgentContextSnapshot,
+  mode: ContextCompactionMode,
+): AgentContextSnapshot {
   const rendered = renderSnapshotSections(snapshot.sections, mode);
   return AgentContextSnapshotSchema.parse({
     ...snapshot,
@@ -68,12 +85,18 @@ export function renderSnapshot(snapshot: AgentContextSnapshot, mode: ContextComp
 export function snapshotToPromptSections(
   snapshot: AgentContextSnapshot | undefined,
   mode: ContextCompactionMode,
-): Array<{ label: string; trustLevel: "trusted" | "untrusted_context"; text: string }> {
+): Array<{
+  id: string;
+  label: string;
+  trustLevel: "trusted" | "untrusted_context";
+  text: string;
+}> {
   if (!snapshot) {
     return [];
   }
   return snapshot.sections
     .map((section) => ({
+      id: section.id,
       label: section.label,
       trustLevel: section.trustLevel,
       text: resolveSectionText(section, mode),
@@ -87,15 +110,27 @@ function renderSnapshotSections(
 ): {
   summary: string;
 } {
+  const renderedSections = sections
+    .map((section) => ({
+      trustLevel: section.trustLevel,
+      label: section.label,
+      text: resolveSectionText(section, mode),
+    }))
+    .filter((section) => section.text.trim().length > 0);
   return {
-    summary: sections
-      .map((section) => `[${section.trustLevel}] ${section.label}:\n${resolveSectionText(section, mode)}`)
-      .filter((section) => section.trim().length > 0)
+    summary: renderedSections
+      .map(
+        (section) =>
+          `[${section.trustLevel}] ${section.label}:\n${section.text}`,
+      )
       .join("\n\n"),
   };
 }
 
-function resolveSectionText(section: AgentContextSection, mode: ContextCompactionMode): string {
+function resolveSectionText(
+  section: AgentContextSection,
+  mode: ContextCompactionMode,
+): string {
   if (mode === "aggressive") {
     return section.aggressiveText;
   }
@@ -105,7 +140,10 @@ function resolveSectionText(section: AgentContextSection, mode: ContextCompactio
   return section.fullText;
 }
 
-function buildContextSections(input: ContextAssemblyInput): AgentContextSection[] {
+function buildContextSections(
+  input: ContextAssemblyInput,
+  editorContext: Awaited<ReturnType<typeof expandEditorContext>>,
+): AgentContextSection[] {
   const sections: AgentContextSection[] = [];
 
   sections.push(
@@ -123,7 +161,25 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
     ),
   );
 
-  sections.push(createSection("user-task", "User task", "trusted", input.request.task, 1));
+  sections.push(
+    createSection("user-task", "User task", "trusted", input.request.task, 1),
+  );
+
+  for (const section of editorContext.sections) {
+    sections.push(
+      createSection(
+        section.id,
+        section.label,
+        section.trustLevel,
+        section.fullText,
+        section.priority,
+        {
+          compactText: section.compactText,
+          aggressiveText: section.aggressiveText,
+        },
+      ),
+    );
+  }
 
   if (input.request.conversationContext) {
     const chat = input.request.conversationContext;
@@ -139,11 +195,13 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
           `Last assistant summary: ${chat.lastAssistantSummary ?? "none"}`,
           `Recent turns: ${
             chat.recentTurns.length > 0
-              ? chat.recentTurns.map((turn) => `${turn.role}:${turn.summary ?? turn.content}`).join(" | ")
+              ? chat.recentTurns
+                  .map((turn) => `${turn.role}:${turn.summary ?? turn.content}`)
+                  .join(" | ")
               : "none"
           }`,
         ].join("\n"),
-        2,
+        4,
         {
           compactText: [
             `Chat session: ${chat.sessionId}`,
@@ -158,10 +216,13 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
 
   if (input.request.selectedSkills.length > 0) {
     const full = input.request.selectedSkills
-      .map((skill) => `${skill.name}[${skill.scope}]: ${skill.reasons.map((reason) => reason.detail).join("; ")}`)
+      .map(
+        (skill) =>
+          `${skill.name}[${skill.scope}]: ${skill.reasons.map((reason) => reason.detail).join("; ")}`,
+      )
       .join(" | ");
     sections.push(
-      createSection("selected-skills", "Selected skills", "trusted", full, 3, {
+      createSection("selected-skills", "Selected skills", "trusted", full, 5, {
         compactText: truncate(full, 360),
         aggressiveText: truncate(full, 180),
       }),
@@ -174,7 +235,7 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
       "Run state",
       "trusted",
       `status=${input.state.status}, phase=${input.state.phase}, iteration=${input.state.iteration}`,
-      4,
+      6,
     ),
   );
 
@@ -185,10 +246,20 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
       .map((step) => `${step.id}:${step.title}[${step.toolNames.join(",")}]`)
       .join(" | ")}`;
     sections.push(
-      createSection("analysis", "Analysis", "untrusted_context", [objective, criteria, plan].join("\n"), 5, {
-        compactText: [objective, criteria, plan].join("\n"),
-        aggressiveText: [objective, `Plan steps: ${truncate(plan.replace(/^Plan steps:\s*/, ""), 220)}`].join("\n"),
-      }),
+      createSection(
+        "analysis",
+        "Analysis",
+        "untrusted_context",
+        [objective, criteria, plan].join("\n"),
+        8,
+        {
+          compactText: [objective, criteria, plan].join("\n"),
+          aggressiveText: [
+            objective,
+            `Plan steps: ${truncate(plan.replace(/^Plan steps:\s*/, ""), 220)}`,
+          ].join("\n"),
+        },
+      ),
     );
   }
 
@@ -198,7 +269,8 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
       .map((call) => call.diffArtifact)
       .filter((artifact): artifact is string => typeof artifact === "string")
       .slice(-5);
-    const changedFiles = input.execution.changedFiles.slice(-5).join(", ") || "none";
+    const changedFiles =
+      input.execution.changedFiles.slice(-5).join(", ") || "none";
     sections.push(
       createSection(
         "execution",
@@ -211,12 +283,17 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
           `Blockers: ${input.execution.blockers.join("; ") || "none"}`,
           recentToolCalls.length > 0
             ? `Recent tool calls: ${recentToolCalls
-                .map((call) => `${call.toolName}:${call.status}${call.error ? `(${call.error})` : ""}`)
+                .map(
+                  (call) =>
+                    `${call.toolName}:${call.status}${call.error ? `(${call.error})` : ""}`,
+                )
                 .join(" | ")}`
             : "Recent tool calls: none",
-          recentDiffs.length > 0 ? `Recent diffs: ${recentDiffs.join(" | ")}` : "Recent diffs: none",
+          recentDiffs.length > 0
+            ? `Recent diffs: ${recentDiffs.join(" | ")}`
+            : "Recent diffs: none",
         ].join("\n"),
-        6,
+        9,
         {
           compactText: [
             `Summary: ${truncate(input.execution.summary, 280)}`,
@@ -250,7 +327,7 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
           `Failed criteria: ${input.evaluation.failedCriteria.join("; ") || "none"}`,
           `Required revisions: ${input.evaluation.requiredRevisions.join("; ") || "none"}`,
         ].join("\n"),
-        7,
+        10,
         {
           compactText: [
             `Status: ${input.evaluation.status}`,
@@ -268,31 +345,53 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
   if ((input.revisions?.length ?? 0) > 0) {
     const recent = input.revisions!.slice(-5);
     const full = recent
-      .map((revision) => `iter${revision.iteration}:${revision.evaluationStatus}:${revision.requiredRevisions.join(" / ") || "none"}`)
+      .map(
+        (revision) =>
+          `iter${revision.iteration}:${revision.evaluationStatus}:${revision.requiredRevisions.join(" / ") || "none"}`,
+      )
       .join(" | ");
     sections.push(
-      createSection("revisions", "Revision history", "untrusted_context", full, 8, {
-        compactText: recent
-          .slice(-3)
-          .map((revision) => `iter${revision.iteration}:${revision.evaluationStatus}`)
-          .join(" | "),
-        aggressiveText: recent.length > 0 ? `Latest revision: iter${recent.at(-1)?.iteration ?? 0}` : "Latest revision: none",
-      }),
+      createSection(
+        "revisions",
+        "Revision history",
+        "untrusted_context",
+        full,
+        11,
+        {
+          compactText: recent
+            .slice(-3)
+            .map(
+              (revision) =>
+                `iter${revision.iteration}:${revision.evaluationStatus}`,
+            )
+            .join(" | "),
+          aggressiveText:
+            recent.length > 0
+              ? `Latest revision: iter${recent.at(-1)?.iteration ?? 0}`
+              : "Latest revision: none",
+        },
+      ),
     );
   }
 
   if ((input.approvals?.length ?? 0) > 0) {
     const recent = input.approvals!.slice(-5);
     const full = recent
-      .map((approval) => `${approval.toolName}:${approval.status}${approval.stepId ? `@${approval.stepId}` : ""}`)
+      .map(
+        (approval) =>
+          `${approval.toolName}:${approval.status}${approval.stepId ? `@${approval.stepId}` : ""}`,
+      )
       .join(" | ");
     sections.push(
-      createSection("approvals", "Approvals", "untrusted_context", full, 9, {
+      createSection("approvals", "Approvals", "untrusted_context", full, 12, {
         compactText: recent
           .slice(-3)
           .map((approval) => `${approval.toolName}:${approval.status}`)
           .join(" | "),
-        aggressiveText: recent.length > 0 ? `Latest approval: ${recent.at(-1)?.toolName}:${recent.at(-1)?.status}` : "",
+        aggressiveText:
+          recent.length > 0
+            ? `Latest approval: ${recent.at(-1)?.toolName}:${recent.at(-1)?.status}`
+            : "",
       }),
     );
   }
@@ -305,13 +404,19 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
         "Recent step trace",
         "untrusted_context",
         recent
-          .map((step) => `${step.stepId}:${step.chosenActionName}:${step.resultSummary ?? "pending"}`)
+          .map(
+            (step) =>
+              `${step.stepId}:${step.chosenActionName}:${step.resultSummary ?? "pending"}`,
+          )
           .join(" | "),
-        10,
+        13,
         {
           compactText: recent
             .slice(-3)
-            .map((step) => `${step.stepId}:${step.chosenActionName}:${truncate(step.resultSummary ?? "pending", 80)}`)
+            .map(
+              (step) =>
+                `${step.stepId}:${step.chosenActionName}:${truncate(step.resultSummary ?? "pending", 80)}`,
+            )
             .join(" | "),
           aggressiveText: recent
             .slice(-2)
@@ -325,9 +430,17 @@ function buildContextSections(input: ContextAssemblyInput): AgentContextSection[
   return sections.sort((left, right) => left.priority - right.priority);
 }
 
-function buildContextSources(artifactStore: ArtifactStore, input: ContextAssemblyInput): AgentContextSnapshot["sources"] {
+function buildContextSources(
+  artifactStore: ArtifactStore,
+  input: ContextAssemblyInput,
+  editorSources: AgentContextSnapshot["sources"],
+): AgentContextSnapshot["sources"] {
   const sources: AgentContextSnapshot["sources"] = [
-    { kind: "instruction", label: "Instruction hierarchy", trustLevel: "trusted" },
+    {
+      kind: "instruction",
+      label: "Instruction hierarchy",
+      trustLevel: "trusted",
+    },
     {
       kind: "user_task",
       label: "Run request",
@@ -340,6 +453,7 @@ function buildContextSources(artifactStore: ArtifactStore, input: ContextAssembl
       artifact: artifactStore.resolve("harness-state.json"),
       trustLevel: "trusted",
     },
+    ...editorSources,
   ];
 
   if (input.request.conversationContext) {
@@ -349,7 +463,8 @@ function buildContextSources(artifactStore: ArtifactStore, input: ContextAssembl
       artifact: artifactStore.resolve("request.json"),
       trustLevel: "trusted",
     });
-    for (const artifact of input.request.conversationContext.includedArtifactRefs) {
+    for (const artifact of input.request.conversationContext
+      .includedArtifactRefs) {
       sources.push({
         kind: "chat_session",
         label: "Referenced chat artifact",
@@ -450,7 +565,8 @@ function createSection(
     trustLevel,
     fullText,
     compactText: overrides?.compactText ?? fullText,
-    aggressiveText: overrides?.aggressiveText ?? overrides?.compactText ?? fullText,
+    aggressiveText:
+      overrides?.aggressiveText ?? overrides?.compactText ?? fullText,
     priority,
   };
 }

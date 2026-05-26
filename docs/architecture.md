@@ -40,7 +40,7 @@ The current implementation is not a blank-slate blueprint anymore. It already in
 
 ### 2.2 Interactive Chat
 
-`src/chat/interactive.ts` wraps the normal orchestration flow in a TTY session model. Each user turn becomes a normal `RunRequest`, but the request also carries `conversationContext`, operator-mode metadata, and the selected provider/model from `src/chat/session-manager.ts`. Chat sessions persist under `.little-helper/runs/chat/<sessionId>/`.
+`src/chat/interactive.ts` wraps the normal orchestration flow in a TTY session model. Each user turn becomes a normal `RunRequest`, but the request also carries `conversationContext`, optional `editorContext`, operator-mode metadata, and the selected provider/model from `src/chat/session-manager.ts`. Chat sessions persist under `.little-helper/runs/chat/<sessionId>/`.
 
 The chat layer supports:
 
@@ -75,9 +75,18 @@ The API currently exposes:
 
 Authentication is bearer-token based and delegates to the configured API-key repository.
 
+Headless message creates can also carry a normalized `editorContext` payload with:
+
+- workspace id
+- active file
+- selection and visible ranges
+- open files and recent files
+- optional diagnostics
+- optional retrieval settings for workspace expansion
+
 ### 2.4 SDK
 
-`packages/sdk/src/index.ts` provides `ArgusClient`, a thin HTTP client for the headless API. It supports session creation, sending messages, polling runs, approving/denying approvals, consuming the SSE stream, and selecting provider/model per session or per message.
+`packages/sdk/src/index.ts` provides `ArgusClient`, a thin HTTP client for the headless API. It supports session creation, sending messages, polling runs, approving/denying approvals, consuming the SSE stream, selecting provider/model per session or per message, and forwarding normalized `editorContext` payloads from IDE or external clients.
 
 ## 3. Boot And Configuration Flow
 
@@ -209,6 +218,7 @@ The controller persists state before and after each major phase and writes check
 `src/context/manager.ts` builds `AgentContextSnapshot` objects from:
 
 - user task and instruction hierarchy
+- upstream editor context from the run request
 - chat context
 - selected skills
 - current run state
@@ -216,6 +226,28 @@ The controller persists state before and after each major phase and writes check
 - approvals
 - revision history
 - step trace
+
+Editor-driven expansion now lives entirely under `src/context/*`:
+
+- `editor-context.ts`: normalizes active-file, selection, visible-range, open-file, recent-file, and diagnostic payloads; extracts trusted editor focus and local code neighborhood sections
+- `retrieval-index.ts`: maintains a local incremental workspace index under `.little-helper/runs/editor-index/*.json`
+- `ranking.ts`: keeps direct selection/current-file context ahead of broader retrieval and deduplicates retrieved chunks
+
+The current prompt-oriented section order is:
+
+1. user task
+2. editor focus
+3. local code neighborhood
+4. chat context, selected skills, and run state
+5. retrieved workspace context
+6. prior analysis, execution, evaluation, approvals, revisions, and step trace
+
+Trust semantics are explicit:
+
+- active file, explicit selection, visible ranges, and diagnostics from the host are `trusted`
+- retrieved workspace chunks and prior model outputs remain `untrusted_context`
+
+Retrieval is only pre-prompt workspace expansion. It does not replace runtime tool use; analyzer, executor, and evaluator still rely on the built-in filesystem and search tools for grounded follow-up work.
 
 Each section is tagged as either `trusted` or `untrusted_context`. The snapshot is rendered in `full`, `compact`, or `aggressive` modes, persisted to `context-summary.md`, `context-sources.json`, and `context-snapshot.json`, and reused by prompt-preflight compaction.
 
@@ -376,6 +408,10 @@ Every run lives under `.little-helper/runs/<runId>/`. Common artifacts include:
 
 `src/memory/artifact-store.ts` also supports confidentiality modes so metadata can be written without persisting full sensitive payloads.
 
+The local retrieval index is persisted separately from per-run artifacts under:
+
+- `.little-helper/runs/editor-index/*.json`
+
 ### 8.2 Stores And Repositories
 
 Local filesystem-backed run persistence is handled by:
@@ -429,6 +465,8 @@ Run execution in the headless mode is queue-based:
 8. approval decisions may enqueue a `resume` job
 
 Headless session and message inputs can persist provider/model selection. The selected pair is copied into chat session state, written into the run request metadata, and reused by worker resume so queued execution stays deterministic even if process-level defaults change later.
+
+Headless message inputs can also persist `editorContext`. The normalized payload is copied into `request.json`, used during context assembly, and reused unchanged during queued resume.
 
 ## 11. Schema And Type Contracts
 

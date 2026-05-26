@@ -133,6 +133,15 @@ Implementation expectations:
 
 `src/context/manager.ts` must remain the single place that assembles context snapshots and source references. If you add new evidence sources, add them there and document them in `docs/architecture.md`.
 
+Current upstream editor-context behavior:
+
+- `RunRequest` may carry normalized `editorContext` for IDE or headless callers
+- `src/context/editor-context.ts` extracts trusted active-file and selection state
+- `src/context/retrieval-index.ts` maintains a local incremental workspace index under `.little-helper/runs/editor-index/*`
+- `src/context/ranking.ts` keeps direct editor focus ahead of broader retrieved context
+- active file, explicit selection, visible ranges, and diagnostics from the host are `trusted`
+- retrieved workspace chunks remain `untrusted_context`
+
 ### 4.4 Tools And Policy
 
 The shipped built-in tool names are:
@@ -185,6 +194,8 @@ Chat sessions in `src/chat/*` and headless records in `src/service/*` are real p
 - headless API behavior
 - SDK compatibility
 
+Headless messages and chat-prepared turns now also support a shared `editorContext` payload so IDE or external clients can pass active-file, selection, visible-range, open-file, recent-file, and diagnostic state into the run request directly.
+
 ## 5. Data And Artifact Expectations
 
 Argus persists run artifacts under `.little-helper/runs/<runId>/`. Contributors should expect and preserve files such as:
@@ -206,6 +217,10 @@ Argus persists run artifacts under `.little-helper/runs/<runId>/`. Contributors 
 - `final-report.md`
 - `checkpoints/*`
 - `artifacts/*`
+
+Argus also persists the shared local retrieval index outside individual runs under:
+
+- `.little-helper/runs/editor-index/*`
 
 If a change adds, removes, or changes a first-class artifact, document it in `docs/architecture.md`.
 
