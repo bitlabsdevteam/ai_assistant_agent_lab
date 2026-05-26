@@ -40,7 +40,7 @@ describe("run result rendering", () => {
         evaluation: undefined,
       }),
     ).toBe(
-      'Approval required to search the web. Run run-2 is awaiting approval. Use "little-helper approvals run-2 --approve <approvalId> --resume" to continue immediately, or inspect approvals first with "little-helper approvals run-2".',
+      'Approval required to search the web. Run run-2 is awaiting approval. Use "argus approvals run-2 --approve <approvalId> --resume" to continue immediately, or inspect approvals first with "argus approvals run-2".',
     );
   });
 

@@ -95,7 +95,7 @@ export async function runChatCommand(
   if (!consoleAdapter.isTTY()) {
     throw new AppError(
       "VALIDATION_ERROR",
-      'The "chat" command requires an interactive TTY. Use `little-helper run "TASK"` for non-interactive automation.',
+      'The "chat" command requires an interactive TTY. Use `argus run "TASK"` for non-interactive automation.',
     );
   }
   if (options.resume && options.new) {
@@ -1058,7 +1058,7 @@ function formatPromptLabel(
   status?: ChatSessionStatus,
 ): string {
   const suffix = status === "awaiting_approval" ? " (approval)" : "";
-  const prompt = `little-helper:${interactive.mode}:${sessionId.slice(-8)}${suffix}> `;
+  const prompt = `argus:${interactive.mode}:${sessionId.slice(-8)}${suffix}> `;
   if (!interactive.latestTokenUsageLine) {
     return prompt;
   }

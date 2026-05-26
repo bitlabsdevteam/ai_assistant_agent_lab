@@ -99,8 +99,8 @@ interface CliChatCommandOptions extends InteractiveChatCommandOptions {
 }
 
 program
-  .name("little-helper")
-  .description("Multi-agent CLI runtime with analyzer, executor, evaluator, and durable harness state.")
+  .name("argus")
+  .description("Argus is a multi-agent CLI runtime with analyzer, executor, evaluator, and durable harness state.")
   .version("0.1.0");
 
 program
@@ -464,7 +464,7 @@ const skillsCommand = new Command("skills");
 program.addCommand(skillsCommand);
 
 skillsCommand.action(() => {
-  console.log(renderSkillsCommandHelp().replaceAll("/", "little-helper "));
+  console.log(renderSkillsCommandHelp().replaceAll("/", "argus "));
 });
 
 skillsCommand

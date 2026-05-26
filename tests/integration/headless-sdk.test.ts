@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { LittleHelperClient } from "../../packages/sdk/src/index.js";
+import { ArgusClient } from "../../packages/sdk/src/index.js";
 import { closeHeadlessTestHarness, createHeadlessTestHarness } from "../helpers/headless-api.js";
 
 const activeHarnesses: Array<Awaited<ReturnType<typeof createHeadlessTestHarness>>> = [];
@@ -18,7 +18,7 @@ describe("headless SDK", () => {
   it("sendMessageStream yields normalized events in order and resolves on completion", async () => {
     const harness = await createHeadlessTestHarness();
     activeHarnesses.push(harness);
-    const client = new LittleHelperClient({
+    const client = new ArgusClient({
       baseUrl: harness.baseUrl,
       apiKey: harness.apiKey,
       fetch: harness.fetchImpl,
@@ -50,7 +50,7 @@ describe("headless SDK", () => {
   it("surfaces approval-required state as structured data and continues after approval", async () => {
     const harness = await createHeadlessTestHarness({ approvalMode: "always" });
     activeHarnesses.push(harness);
-    const client = new LittleHelperClient({
+    const client = new ArgusClient({
       baseUrl: harness.baseUrl,
       apiKey: harness.apiKey,
       fetch: harness.fetchImpl,

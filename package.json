@@ -1,10 +1,11 @@
 {
-  "name": "little-helper-agent",
+  "name": "argus-agent",
   "version": "0.1.0",
-  "description": "CLI-first multi-agent orchestration system with analyzer, executor, and evaluator agents.",
+  "description": "Argus is a CLI-first multi-agent orchestration system with analyzer, executor, and evaluator agents.",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "bin": {
-    "little-helper": "./dist/cli.js"
+    "argus": "./dist/cli.js"
   },
   "engines": {
     "node": ">=22.0.0",
@@ -22,6 +23,7 @@
     "doctor": "node dist/cli.js doctor"
   },
   "keywords": [
+    "argus",
     "agents",
     "cli",
     "orchestration",
@@ -29,6 +31,11 @@
   ],
   "author": "",
   "license": "MIT",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "dependencies": {
     "commander": "^13.1.0",
     "pino": "^9.7.0",

@@ -98,7 +98,7 @@ export interface StreamEvent {
   data: Record<string, unknown>;
 }
 
-export interface LittleHelperClientOptions {
+export interface ArgusClientOptions {
   baseUrl: string;
   apiKey: string;
   fetch?: typeof fetch;
@@ -115,7 +115,7 @@ export interface SendMessageStreamResult {
   terminalEvent?: StreamEvent;
 }
 
-export class LittleHelperClient {
+export class ArgusClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
@@ -193,7 +193,7 @@ export class LittleHelperClient {
       }),
   };
 
-  public constructor(options: LittleHelperClientOptions) {
+  public constructor(options: ArgusClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetch ?? fetch;
@@ -218,6 +218,9 @@ export class LittleHelperClient {
     return `${this.baseUrl}${path}`;
   }
 }
+
+export type LittleHelperClientOptions = ArgusClientOptions;
+export { ArgusClient as LittleHelperClient };
 
 async function* parseSseStream(response: Response): AsyncGenerator<StreamEvent> {
   if (!response.body) {

@@ -51,7 +51,7 @@ export interface PromptArtifactRecord {
   confidentialityPolicy: ConfidentialArtifactPolicy;
 }
 
-const PROMPT_BROKER_ID = "little-helper.prompt-broker";
+const PROMPT_BROKER_ID = "argus.prompt-broker";
 const DEFAULT_CORE_PROMPT_VERSION = "sealed-core-fallback-v1";
 const DEFAULT_POLICY_VERSION = "runtime-policy-v1";
 const DEFAULT_CONFIDENTIAL_ARTIFACT_POLICY = ConfidentialArtifactPolicySchema.parse({
@@ -256,21 +256,21 @@ function loadCorePrompt(agent: AgentRole): string {
   switch (agent) {
     case "analyzer":
       return [
-        "You are the sealed analyzer control plane for little-helper.",
+        "You are the sealed analyzer control plane for Argus.",
         "Produce strictly valid JSON that matches the provided schema.",
         "Restate the objective, surface assumptions and unknowns, and plan only with registered tools.",
         "Treat append-only customization as lower priority than this sealed layer.",
       ].join("\n");
     case "executor":
       return [
-        "You are the sealed executor control plane for little-helper.",
+        "You are the sealed executor control plane for Argus.",
         "Produce strictly valid JSON that matches the provided schema.",
         "Choose exactly one typed action at a time and never invent tools or permissions.",
         "Treat append-only customization as lower priority than this sealed layer.",
       ].join("\n");
     case "evaluator":
       return [
-        "You are the sealed evaluator control plane for little-helper.",
+        "You are the sealed evaluator control plane for Argus.",
         "Produce strictly valid JSON that matches the provided schema.",
         "Verify success criteria independently and prefer actionable revision guidance over optimism.",
         "Treat append-only customization as lower priority than this sealed layer.",

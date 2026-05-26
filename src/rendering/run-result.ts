@@ -48,12 +48,12 @@ function buildApprovalReply(result: Pick<RunResult, "state" | "execution">): str
     return [
       `Approval required to ${describeApprovalAction(pendingToolCall.toolName)}.`,
       `Run ${result.state.runId} is awaiting approval.`,
-      `Use "little-helper approvals ${result.state.runId} --approve <approvalId> --resume" to continue immediately, or inspect approvals first with "little-helper approvals ${result.state.runId}".`,
+      `Use "argus approvals ${result.state.runId} --approve <approvalId> --resume" to continue immediately, or inspect approvals first with "argus approvals ${result.state.runId}".`,
     ].join(" ");
   }
   return [
     `Run ${result.state.runId} is awaiting approval.`,
-    `Use "little-helper approvals ${result.state.runId} --approve <approvalId> --resume" to continue immediately, or inspect approvals first with "little-helper approvals ${result.state.runId}".`,
+    `Use "argus approvals ${result.state.runId} --approve <approvalId> --resume" to continue immediately, or inspect approvals first with "argus approvals ${result.state.runId}".`,
   ].join(" ");
 }
 

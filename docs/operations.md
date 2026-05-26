@@ -2,10 +2,10 @@
 
 ## Routine checks
 
-- `little-helper doctor`
-- `little-helper status RUN_ID`
-- `little-helper logs RUN_ID`
-- `little-helper artifacts RUN_ID`
+- `argus doctor`
+- `argus status RUN_ID`
+- `argus logs RUN_ID`
+- `argus artifacts RUN_ID`
 - When `llmProvider=openai`, ensure `OPENAI_API_KEY` is present before relying on `doctor` or live runs.
 - When using `web.search`, ensure `PERPLEXITY_API_KEY` is present in the workspace `.env` or process environment.
 - Add `api.perplexity.ai` to `networkAllowlist` before expecting Perplexity-backed web search to pass policy checks.
@@ -13,14 +13,14 @@
 
 ## Recovery
 
-- `little-helper resume RUN_ID` resumes from the latest durable checkpoint.
-- `little-helper recover RUN_ID` inspects lease and checkpoint state before resuming.
-- `little-helper cancel RUN_ID` marks the run cancelled without deleting artifacts.
-- `little-helper approvals RUN_ID --approve APPROVAL_ID` records an approval decision before resume.
-- `little-helper approvals RUN_ID --deny APPROVAL_ID` records a denial and keeps the run auditable.
-- `little-helper sessions RUN_ID --inspect SESSION_ID` refreshes one persisted session against the local process table.
-- `little-helper sessions RUN_ID --reconcile` reconciles all persisted running sessions.
-- `little-helper sessions RUN_ID --cancel SESSION_ID` sends `SIGTERM` when the tracked PID is still alive, then records cancellation durably.
+- `argus resume RUN_ID` resumes from the latest durable checkpoint.
+- `argus recover RUN_ID` inspects lease and checkpoint state before resuming.
+- `argus cancel RUN_ID` marks the run cancelled without deleting artifacts.
+- `argus approvals RUN_ID --approve APPROVAL_ID` records an approval decision before resume.
+- `argus approvals RUN_ID --deny APPROVAL_ID` records a denial and keeps the run auditable.
+- `argus sessions RUN_ID --inspect SESSION_ID` refreshes one persisted session against the local process table.
+- `argus sessions RUN_ID --reconcile` reconciles all persisted running sessions.
+- `argus sessions RUN_ID --cancel SESSION_ID` sends `SIGTERM` when the tracked PID is still alive, then records cancellation durably.
 
 ## Troubleshooting
 

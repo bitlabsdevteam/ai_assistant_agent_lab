@@ -96,7 +96,7 @@ The package should expose the executable through the `bin` field:
 ```json
 {
   "bin": {
-    "little-helper": "./dist/cli.js"
+    "argus": "./dist/cli.js"
   }
 }
 ```
@@ -1070,35 +1070,35 @@ export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
 
 ### 6.1 Command Overview
 
-The CLI binary should be named `little-helper` unless the product name changes.
+The CLI binary should be named `argus`.
 
 Required commands:
 
 ```text
-little-helper run "TASK"
-little-helper plan "TASK"
-little-helper eval RUN_ID
-little-helper status RUN_ID
-little-helper logs RUN_ID
-little-helper artifacts RUN_ID
-little-helper config validate
-little-helper version
+argus run "TASK"
+argus plan "TASK"
+argus eval RUN_ID
+argus status RUN_ID
+argus logs RUN_ID
+argus artifacts RUN_ID
+argus config validate
+argus version
 ```
 
 Optional production commands:
 
 ```text
-little-helper resume RUN_ID
-little-helper cancel RUN_ID
-little-helper doctor
-little-helper tools list
-little-helper tools inspect TOOL_NAME
-little-helper mcp list
-little-helper mcp inspect SERVER_NAME
-little-helper approvals RUN_ID
-little-helper sessions RUN_ID
-little-helper checkpoints RUN_ID
-little-helper recover RUN_ID
+argus resume RUN_ID
+argus cancel RUN_ID
+argus doctor
+argus tools list
+argus tools inspect TOOL_NAME
+argus mcp list
+argus mcp inspect SERVER_NAME
+argus approvals RUN_ID
+argus sessions RUN_ID
+argus checkpoints RUN_ID
+argus recover RUN_ID
 ```
 
 ### 6.2 `run`
@@ -1106,7 +1106,7 @@ little-helper recover RUN_ID
 Runs the full analyzer -> executor -> evaluator workflow.
 
 ```text
-little-helper run "Create a FastAPI health endpoint"
+argus run "Create a FastAPI health endpoint"
 ```
 
 Options:
@@ -1135,7 +1135,7 @@ Expected behavior:
 Runs only the Analyzer Agent and prints a structured plan.
 
 ```text
-little-helper plan "Refactor the payment module"
+argus plan "Refactor the payment module"
 ```
 
 This command must not execute tools with side effects.
@@ -1145,7 +1145,7 @@ This command must not execute tools with side effects.
 Runs the Evaluator Agent against an existing run.
 
 ```text
-little-helper eval 20260524-101500-a13f
+argus eval 20260524-101500-a13f
 ```
 
 This is useful for rechecking a run after manual changes.
@@ -1155,7 +1155,7 @@ This is useful for rechecking a run after manual changes.
 Prints run state.
 
 ```text
-little-helper status 20260524-101500-a13f
+argus status 20260524-101500-a13f
 ```
 
 Output should include:
@@ -1804,7 +1804,7 @@ Steps:
 
 Exit criteria:
 
-- `pnpm exec little-helper version` or `node dist/cli.js version` works locally.
+- `pnpm exec argus version` or `node dist/cli.js version` works locally.
 - `pnpm test` runs successfully.
 - `pnpm lint`, `pnpm format:check`, and `pnpm typecheck` are documented.
 
@@ -1924,7 +1924,7 @@ Steps:
 
 Exit criteria:
 
-- `little-helper plan "TASK"` returns an `AnalysisResult`.
+- `argus plan "TASK"` returns an `AnalysisResult`.
 - The plan command has no side effects.
 - Risky actions are marked for approval.
 
@@ -2024,7 +2024,7 @@ Steps:
 
 Exit criteria:
 
-- `little-helper run "TASK"` completes a full loop.
+- `argus run "TASK"` completes a full loop.
 - Max iterations are enforced.
 - Resume works without repeating completed steps unsafely.
 - Recovery can reconcile interrupted runs safely.
@@ -2117,8 +2117,8 @@ pnpm typecheck
 pnpm test
 pnpm build
 node dist/cli.js doctor --output json
-docker build -t little-helper-agent .
-docker run --rm little-helper-agent version
+docker build -t argus-agent .
+docker run --rm argus-agent version
 ```
 
 Deployment should be manual at first, then automated after the release process is stable.
@@ -2212,7 +2212,7 @@ Use this as the production hardening checklist:
 The final production version is a CLI application that can be installed, configured, and executed in a controlled environment. A user can run:
 
 ```text
-little-helper run "Implement the requested task"
+argus run "Implement the requested task"
 ```
 
 The product will:

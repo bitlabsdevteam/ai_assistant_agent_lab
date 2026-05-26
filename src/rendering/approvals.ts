@@ -27,7 +27,7 @@ export function renderApprovals(
       `${options.decision.status === "approved" ? "Approved" : "Denied"} ${options.decision.approvalId}.`,
     );
     if (options.decision.status === "approved") {
-      lines.push(`Use "little-helper resume ${options.runId}" to continue.`);
+      lines.push(`Use "argus resume ${options.runId}" to continue.`);
     }
   }
 
@@ -47,7 +47,7 @@ export function renderApprovals(
   const pending = approvals.filter((approval) => approval.status === "pending");
   if (pending.length > 0) {
     lines.push(
-      `Approve with "little-helper approvals ${options.runId} --approve <approvalId> --resume" to continue immediately, or run "little-helper resume ${options.runId}" after approval.`,
+      `Approve with "argus approvals ${options.runId} --approve <approvalId> --resume" to continue immediately, or run "argus resume ${options.runId}" after approval.`,
     );
   }
 

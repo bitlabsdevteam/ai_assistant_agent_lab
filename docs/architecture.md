@@ -13,7 +13,7 @@ Context assembly is handled by `src/context/manager.ts`. It builds role-specific
 
 Evaluation is handled by `src/agents/evaluator.ts`. Validation is now selected explicitly per run: configured commands take priority, otherwise the evaluator auto-detects supported workspace validation and records structured `validationDecisions` in `evaluation.json` for audit and replay.
 
-Session supervision is handled by `src/harness/session-supervisor.ts` together with `sessions.json`. The supervisor refreshes persisted running sessions against local PIDs, records terminal reasons such as `operator_cancelled` or `stale_on_recovery`, and is used by both recovery and the `little-helper sessions` CLI controls.
+Session supervision is handled by `src/harness/session-supervisor.ts` together with `sessions.json`. The supervisor refreshes persisted running sessions against local PIDs, records terminal reasons such as `operator_cancelled` or `stale_on_recovery`, and is used by both recovery and the `argus sessions` CLI controls.
 
 LLM routing lives behind `src/llm/client.ts` and `src/llm/providers.ts`. The current build targets the OpenAI Responses API and validates structured JSON-schema output derived from the runtime's Zod contracts.
 

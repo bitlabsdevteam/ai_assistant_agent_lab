@@ -32,7 +32,7 @@ describe("approvals rendering", () => {
     expect(lines).toEqual([
       "Approvals for run run-1:",
       "approval-1: Search the web. Network access needs approval. Status: pending.",
-      'Approve with "little-helper approvals run-1 --approve <approvalId> --resume" to continue immediately, or run "little-helper resume run-1" after approval.',
+      'Approve with "argus approvals run-1 --approve <approvalId> --resume" to continue immediately, or run "argus resume run-1" after approval.',
     ]);
   });
 
@@ -56,7 +56,7 @@ describe("approvals rendering", () => {
 
     expect(lines).toEqual([
       "Approved approval-2.",
-      'Use "little-helper resume run-2" to continue.',
+      'Use "argus resume run-2" to continue.',
       "No approvals recorded for run run-2.",
     ]);
   });

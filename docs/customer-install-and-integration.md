@@ -1,6 +1,6 @@
 # Customer Install and Integration Guide
 
-Yes. A customer can use `little-helper` today if they are comfortable self-hosting a Node.js CLI or service and supplying OpenAI credentials. The most production-ready entry point today is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding. One important constraint applies up front: there is not currently a first-class `little-helper serve` command, so API deployment requires a small custom Node host that wraps the exported runtime objects.
+Yes. A customer can use `Argus` today if they are comfortable self-hosting a Node.js CLI or service and supplying OpenAI credentials. The most production-ready entry point today is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding. One important constraint applies up front: there is not currently a first-class `argus serve` command, so API deployment requires a small custom Node host that wraps the exported runtime objects.
 
 ## Recommended Adoption Path
 
@@ -33,8 +33,8 @@ Install and validate the runtime in this order:
 4. Export `LITTLE_HELPER_LLM_PROVIDER=openai`.
 5. Export `LITTLE_HELPER_LLM_MODEL=<chosen model>`.
 6. Export `OPENAI_API_KEY=<key>`.
-7. Run `node dist/cli.js doctor` or `little-helper doctor` after linking or installing the package.
-8. Run a smoke test with `little-helper plan "Create a health endpoint"` and then `little-helper run "Create a health endpoint"`.
+7. Run `node dist/cli.js doctor` or `argus doctor` after linking or installing the package.
+8. Run a smoke test with `argus plan "Create a health endpoint"` and then `argus run "Create a health endpoint"`.
 
 Example shell session:
 
@@ -56,10 +56,35 @@ node dist/cli.js run "Create a health endpoint"
 If you package or link the CLI binary, the same checks become:
 
 ```bash
-little-helper doctor
-little-helper plan "Create a health endpoint"
-little-helper run "Create a health endpoint"
+argus doctor
+argus plan "Create a health endpoint"
+argus run "Create a health endpoint"
 ```
+
+For repository health without a live model, use:
+
+```bash
+pnpm install
+pnpm build
+pnpm typecheck
+pnpm test
+```
+
+For containerized validation, prefer:
+
+```bash
+docker build -t argus-agent .
+docker run --rm argus-agent version
+docker run --rm \
+  -e LITTLE_HELPER_LLM_PROVIDER=openai \
+  -e LITTLE_HELPER_LLM_MODEL=gpt-5.4 \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  argus-agent doctor
+```
+
+The repository includes a `docker-compose.yml`, but it is meant as a convenience container wrapper rather than the primary end-to-end validation path.
 
 ## CLI Integration Path
 
@@ -70,9 +95,9 @@ Recommended CLI workflow:
 1. Install and build the binary.
 2. Add a project-local `.little-helper.config.json`.
 3. Configure `approvalMode`, `allowedRoots`, `networkAllowlist`, `validationCommands`, and optional `llmRouting`.
-4. Run tasks with `little-helper run`.
+4. Run tasks with `argus run`.
 5. Review state and artifacts with `status`, `logs`, `artifacts`, `eval`, `approvals`, and `sessions`.
-6. Resume interrupted runs with `little-helper resume RUN_ID`.
+6. Resume interrupted runs with `argus resume RUN_ID`.
 
 Minimal project config:
 
@@ -107,30 +132,30 @@ Notes:
 
 Typical CLI commands for customer operations:
 
-- `little-helper run "TASK"`
-- `little-helper plan "TASK"`
-- `little-helper doctor`
-- `little-helper resume RUN_ID`
-- `little-helper status RUN_ID`
-- `little-helper logs RUN_ID`
-- `little-helper artifacts RUN_ID`
-- `little-helper eval RUN_ID`
-- `little-helper approvals RUN_ID`
-- `little-helper sessions RUN_ID`
+- `argus run "TASK"`
+- `argus plan "TASK"`
+- `argus doctor`
+- `argus resume RUN_ID`
+- `argus status RUN_ID`
+- `argus logs RUN_ID`
+- `argus artifacts RUN_ID`
+- `argus eval RUN_ID`
+- `argus approvals RUN_ID`
+- `argus sessions RUN_ID`
 
 Approval-aware deployments normally follow this flow:
 
 ```bash
-little-helper approvals RUN_ID
-little-helper approvals RUN_ID --approve APPROVAL_ID
-little-helper resume RUN_ID
+argus approvals RUN_ID
+argus approvals RUN_ID --approve APPROVAL_ID
+argus resume RUN_ID
 ```
 
 Container deployment is supported, but it is only packaging around the same CLI/runtime. It does not change the operational model.
 
 ## Advanced SDK And Headless API Path
 
-Use this path when the customer wants to embed the runtime in an existing application, developer portal, or internal platform. This is supported, but it is not the default recommendation because there is no built-in `little-helper serve` command yet.
+Use this path when the customer wants to embed the runtime in an existing application, developer portal, or internal platform. This is supported, but it is not the default recommendation because there is no built-in `argus serve` command yet.
 
 Current embeddable surfaces:
 
@@ -157,7 +182,7 @@ In practice, the customer must create a small Node host process that:
 Minimal host shape:
 
 ```ts
-import { loadSettings, HeadlessPlatform, createHeadlessApiServer } from "little-helper-agent";
+import { loadSettings, HeadlessPlatform, createHeadlessApiServer } from "argus-agent";
 import { createCustomerRepositoryBundle } from "./repositories.js";
 
 const settings = await loadSettings(process.cwd());
@@ -227,11 +252,11 @@ There are additional CLI commands such as `tools list`, `config validate`, `canc
 
 Customers should validate installation and integration with this checklist:
 
-1. Run `little-helper doctor`.
-2. Run `little-helper tools list`.
-3. Run `little-helper plan "simple task"`.
-4. Run `little-helper run "simple task"` in a disposable workspace.
-5. Run `little-helper artifacts RUN_ID`.
+1. Run `argus doctor`.
+2. Run `argus tools list`.
+3. Run `argus plan "simple task"`.
+4. Run `argus run "simple task"` in a disposable workspace.
+5. Run `argus artifacts RUN_ID`.
 6. For API users, create one session, send one message, consume one SSE stream, and verify the terminal run status.
 7. For approval-enabled deployments, force an approval-required run and verify approve/resume behavior.
 

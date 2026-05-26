@@ -180,11 +180,11 @@ describe("chat cli", () => {
       },
     );
 
-    const promptLabels = console.output.filter((entry) => entry.includes("little-helper:suggest:"));
+    const promptLabels = console.output.filter((entry) => entry.includes("argus:suggest:"));
     expect(promptLabels[1]).toContain(
       "Token usage: total=61,052 input=53,698 (+ 644,352 cached) output=7,354 (reasoning 2,080)",
     );
-    expect(promptLabels[1]).toContain("little-helper:suggest:");
+    expect(promptLabels[1]).toContain("argus:suggest:");
   });
 
   it("shows the Esc hint and cancels the active chat run", async () => {
