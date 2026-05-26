@@ -6,10 +6,12 @@
 - `argus status RUN_ID`
 - `argus logs RUN_ID`
 - `argus artifacts RUN_ID`
-- When `llmProvider=openai`, ensure `OPENAI_API_KEY` is present before relying on `doctor` or live runs.
+- Ensure the credential for every resolved provider route is present before relying on `doctor` or live runs:
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `MOONSHOT_API_KEY`.
 - When using `web.search`, ensure `PERPLEXITY_API_KEY` is present in the workspace `.env` or process environment.
 - Add `api.perplexity.ai` to `networkAllowlist` before expecting Perplexity-backed web search to pass policy checks.
 - When `llmRouting` is configured, `doctor` reports the aggregated health of the resolved analyzer, executor, and evaluator routes instead of only one global provider.
+- If an operator overrides provider or model through CLI flags, chat session state, or the headless API, that selection is persisted with the run request and reused on resume.
 
 ## Recovery
 

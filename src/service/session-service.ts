@@ -23,6 +23,7 @@ export class SessionService {
     const created = await this.chatSessions.createSession({
       workingDirectory: parsed.workingDirectory,
       mode,
+      ...(parsed.provider ? { selectedProvider: parsed.provider } : {}),
       ...(parsed.model ? { selectedModel: parsed.model } : {}),
     });
     const record = await this.sessions.create(
@@ -33,6 +34,7 @@ export class SessionService {
       workingDirectory: created.workingDirectory,
       profile: parsed.profile,
       mode,
+      ...(parsed.provider ? { provider: parsed.provider } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
       metadata: parsed.metadata,
       status: "idle",
@@ -45,6 +47,8 @@ export class SessionService {
       sessionId: record.sessionId,
       status: record.status,
       createdAt: record.createdAt,
+      ...(record.provider ? { provider: record.provider } : {}),
+      ...(record.model ? { model: record.model } : {}),
     });
   }
 
@@ -61,6 +65,8 @@ export class SessionService {
       updatedAt: session.updatedAt,
       ...(session.activeRunId ? { activeRunId: session.activeRunId } : {}),
       pendingApprovalsCount: session.pendingApprovalsCount,
+      ...(session.provider ? { provider: session.provider } : {}),
+      ...(session.model ? { model: session.model } : {}),
       metadata: session.metadata,
     });
   }

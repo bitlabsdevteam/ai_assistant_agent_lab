@@ -34,10 +34,14 @@ describe("headless conversation API", () => {
         externalUserId: "user-1",
         metadata: { source: "crm" },
         workingDirectory: harness.workspace,
+        provider: "gemini",
+        model: "gemini-2.5-pro",
       }),
     });
     expect(sessionResponse.status).toBe(201);
     const session = (await sessionResponse.json()) as SessionResponse;
+    expect(session.provider).toBe("gemini");
+    expect(session.model).toBe("gemini-2.5-pro");
 
     const messageResponse = await harness.fetchImpl(`${harness.baseUrl}/v1/sessions/${session.sessionId}/messages`, {
       method: "POST",
@@ -75,6 +79,8 @@ describe("headless conversation API", () => {
     const sessionSummary = (await sessionSummaryResponse.json()) as { pendingApprovalsCount: number; activeRunId?: string };
     expect(sessionSummary.pendingApprovalsCount).toBe(0);
     expect(sessionSummary.activeRunId).toBeUndefined();
+    expect((sessionSummary as { provider?: string }).provider).toBe("gemini");
+    expect((sessionSummary as { model?: string }).model).toBe("gemini-2.5-pro");
   });
 
   it("replays ordered SSE events and supports Last-Event-ID reconnect", async () => {

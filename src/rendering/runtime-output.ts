@@ -734,26 +734,34 @@ function createWorkingIndicatorController(
     frameIndex = (frameIndex + 1) % frames.length;
   }
 
+  function activateIndicator(): void {
+    if (finished || visibleOutputStarted) {
+      return;
+    }
+    if (!interactiveTTY) {
+      if (!staticLineRendered) {
+        writer.writeLine("Working...");
+        staticLineRendered = true;
+      }
+      return;
+    }
+    renderFrame();
+    frameTimer = setInterval(renderFrame, frameIntervalMs);
+  }
+
   return {
     noteActivity: () => {
       if (finished || visibleOutputStarted || activityObserved) {
         return;
       }
       activityObserved = true;
+      if (delayMs <= 0) {
+        activateIndicator();
+        return;
+      }
       activationTimer = setTimeout(() => {
         activationTimer = undefined;
-        if (finished || visibleOutputStarted) {
-          return;
-        }
-        if (!interactiveTTY) {
-          if (!staticLineRendered) {
-            writer.writeLine("Working...");
-            staticLineRendered = true;
-          }
-          return;
-        }
-        renderFrame();
-        frameTimer = setInterval(renderFrame, frameIntervalMs);
+        activateIndicator();
       }, delayMs);
     },
     noteVisibleOutput: () => {

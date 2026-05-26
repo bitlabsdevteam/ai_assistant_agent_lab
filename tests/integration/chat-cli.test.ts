@@ -73,6 +73,48 @@ describe("chat cli", () => {
     expect(console.output.join("\n")).not.toContain("## Analyzer Response");
   });
 
+  it("persists provider and model overrides into chat session state and run metadata", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-provider-cli-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings = createSettings(workspace, artifactDir);
+    const console = new FakeConsole(["Create file hello.txt with content hello", "/exit"]);
+    const requests: RunRequest[] = [];
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: false,
+        provider: "moonshot",
+        model: "kimi-k2-0905-preview",
+      },
+      {
+        console,
+        loadSettings: () => Promise.resolve(settings),
+        createOrchestrator: () =>
+          ({
+            run: (request: RunRequest) => {
+              requests.push(request);
+              return Promise.resolve(createRunResult("run-provider", artifactDir, "completed"));
+            },
+            resume: () => Promise.reject(new Error("resume should not be called")),
+          }) as never,
+      },
+    );
+
+    const sessionId = requests[0]?.metadata.sessionId;
+    const interactive = JSON.parse(
+      await readFile(path.join(artifactDir, "chat", sessionId!, "interactive-session.json"), "utf8"),
+    ) as { selectedProvider?: string; selectedModel?: string };
+
+    expect(interactive.selectedProvider).toBe("moonshot");
+    expect(interactive.selectedModel).toBe("kimi-k2-0905-preview");
+    expect(requests[0]?.metadata.selectedProvider).toBe("moonshot");
+    expect(requests[0]?.metadata.selectedModel).toBe("kimi-k2-0905-preview");
+  });
+
   it("shows a transient working indicator before streamed assistant output and clears it before the next prompt", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-working-indicator-"));
     const artifactDir = path.join(workspace, ".runs");
@@ -128,6 +170,43 @@ describe("chat cli", () => {
     expect(countOccurrences(console.output.join(""), "Hello from chat.")).toBe(1);
     expect(console.output.filter((entry) => entry.includes("> ")).every((entry) => !entry.includes("Working"))).toBe(true);
   }, 10_000);
+
+  it("shows the working indicator for fast chat turns", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-fast-working-indicator-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const settings = createSettings(workspace, artifactDir);
+    const console = new FakeConsole(["hello", "/exit"]);
+
+    await runChatCommand(
+      {
+        cwd: workspace,
+        profile: "default",
+        dryRun: false,
+        output: "text",
+        stream: true,
+      },
+      {
+        console,
+        loadSettings: () => Promise.resolve({ ...settings, stream: true }),
+        createOrchestrator: (_settings, _logger, onEvent) =>
+          ({
+            run: async () => {
+              onEvent?.({
+                runId: "run-fast-working",
+                event: "harness.run_started",
+                status: "success",
+                timestamp: new Date().toISOString(),
+              });
+              return createRunResult("run-fast-working", artifactDir, "completed", "Hello! How can I help you today?");
+            },
+            resume: () => Promise.reject(new Error("resume should not be called")),
+          }) as never,
+      },
+    );
+
+    expect(console.output.some((entry) => stripAnsi(entry).includes("Working."))).toBe(true);
+    expect(countOccurrences(console.output.join(""), "Hello! How can I help you today?")).toBe(1);
+  });
 
   it("keeps the latest token usage visible above the next prompt", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-token-usage-"));
@@ -532,7 +611,7 @@ describe("chat cli", () => {
     expect(output).toContain("Inspecting workspace");
     expect(output).not.toContain("\"objective\": \"Create file hello.txt with content hello\"");
     expect(output).not.toContain("Thinking");
-    expect(output).not.toContain("Working");
+    expect(output).toContain("Working");
     expect(output).not.toContain("Checking");
   });
 
@@ -579,7 +658,7 @@ describe("chat cli", () => {
     expect(output).not.toContain("Thinking");
     expect(output).not.toContain("run:");
     expect(output).not.toContain("needs_revision");
-    expect(output).not.toContain("Working");
+    expect(output).toContain("Working");
     expect(output).not.toContain("Checking");
   });
 
@@ -646,7 +725,7 @@ describe("chat cli", () => {
     expect(output).toContain("Searching the web");
     expect(output).toContain("Finished searching the web");
     expect(output).not.toContain("run:");
-    expect(output).not.toContain("Working");
+    expect(output).toContain("Working");
     expect(output).not.toContain("Checking");
   });
 
@@ -719,7 +798,7 @@ describe("chat cli", () => {
     expect(output).not.toContain("Awaiting approval");
     expect(output).not.toContain("Approval needed to search the web");
     expect(output).not.toContain("Thinking");
-    expect(output).not.toContain("Working");
+    expect(output).toContain("Working");
     expect(output).not.toContain("Checking");
     const runDirs = (await readdir(artifactDir, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory() && entry.name !== "chat")
@@ -1102,6 +1181,7 @@ describe("chat cli", () => {
     expect(output).toContain("/mcp list");
     expect(output).toContain("/mcp inspect <serverName>");
     expect(output).toContain("/mcp add <name>");
+    expect(output).toContain("/provider [openai|anthropic|gemini|moonshot|default]");
   });
 
   it("adds a skill from chat, reloads settings, and uses it on the next turn without restarting", async () => {

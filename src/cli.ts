@@ -12,6 +12,7 @@ import { AppError } from "./errors.js";
 import { bindProcessEscape, runWithEscapeCancellation } from "./interrupts.js";
 import type { LLMStreamEvent } from "./llm/client.js";
 import { createLLMClient } from "./llm/providers.js";
+import { listResolvedLLMConfigs } from "./llm/routing.js";
 import { TokenUsageTracker } from "./llm/usage-tracker.js";
 import { AnalyzerAgent } from "./agents/analyzer.js";
 import { runChatCommand, type ChatCommandOptions as InteractiveChatCommandOptions } from "./chat/interactive.js";
@@ -46,6 +47,8 @@ interface BaseOptions {
   cwd: string;
   output?: OutputFormat;
   artifactDir?: string;
+  provider?: Settings["llmProvider"];
+  model?: string;
 }
 
 interface RunCommandOptions extends BaseOptions {
@@ -53,6 +56,8 @@ interface RunCommandOptions extends BaseOptions {
   dryRun: boolean;
   maxIterations?: number;
   approvalMode?: Settings["approvalMode"];
+  provider?: Settings["llmProvider"];
+  model?: string;
   artifactDir?: string;
   stream: boolean;
 }
@@ -115,6 +120,7 @@ program
   .option("--resume <sessionId>", "resume an existing chat session")
   .option("--new", "start a fresh session")
   .option("--mode <mode>", "suggest, auto-edit, or full-auto", "suggest")
+  .option("--provider <id>", "override the session provider")
   .option("--model <id>", "override the session model")
   .option("--no-stream", "disable streaming progress")
   .action(async (options: CliChatCommandOptions) => {
@@ -132,6 +138,9 @@ program
       ...(typeof options.mode === "string"
         ? { mode: options.mode as NonNullable<InteractiveChatCommandOptions["mode"]> }
         : {}),
+      ...(typeof options.provider === "string"
+        ? { provider: options.provider as NonNullable<InteractiveChatCommandOptions["provider"]> }
+        : {}),
       ...(typeof options.model === "string" ? { model: options.model } : {}),
     });
   });
@@ -146,6 +155,8 @@ program
   .option("--approval-mode <mode>", "never, on-risk, always")
   .option("--output <format>", "text or json", "text")
   .option("--artifact-dir <path>", "artifact directory override")
+  .option("--provider <id>", "override the run provider")
+  .option("--model <id>", "override the run model")
   .option("--no-stream", "disable streaming progress")
   .action(async (task: string, options: RunCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, options);
@@ -167,7 +178,10 @@ program
       profile: options.profile,
       dryRun: Boolean(options.dryRun),
       maxIterations: options.maxIterations ?? settings.maxIterations,
-      metadata: {},
+      metadata: {
+        ...(typeof options.provider === "string" ? { selectedProvider: options.provider } : {}),
+        ...(typeof options.model === "string" ? { selectedModel: options.model } : {}),
+      },
     });
     const result = await runWithEscapeCancellation(
       {
@@ -197,6 +211,8 @@ program
   .argument("<task>", "task to analyze")
   .option("--cwd <path>", "working directory", process.cwd())
   .option("--output <format>", "text or json", "text")
+  .option("--provider <id>", "override the planning provider")
+  .option("--model <id>", "override the planning model")
   .action(async (task: string, options: PlanCommandOptions) => {
     const settings = await loadCliSettings(options.cwd, { ...options, stream: false });
     const llmStreamRenderer = createCLIStreamRenderer(settings.outputFormat);
@@ -209,7 +225,10 @@ program
       profile: "default",
       dryRun: true,
       maxIterations: 1,
-      metadata: {},
+      metadata: {
+        ...(typeof options.provider === "string" ? { selectedProvider: options.provider } : {}),
+        ...(typeof options.model === "string" ? { selectedModel: options.model } : {}),
+      },
     });
     const analysis = await new AnalyzerAgent().run(request, {
       runId: "plan-preview",
@@ -734,6 +753,8 @@ async function loadCliSettings(cwd: string, options: Record<string, unknown>): P
   const overrides = {
     ...(artifactDir ? { artifactDir } : {}),
     ...(approvalMode ? { approvalMode } : {}),
+    ...(typeof options.provider === "string" ? { llmProvider: options.provider as Settings["llmProvider"] } : {}),
+    ...(typeof options.model === "string" ? { llmModel: options.model } : {}),
     ...(typeof options.maxIterations === "number" ? { maxIterations: options.maxIterations } : {}),
     outputFormat: (asString(options.output) as OutputFormat | undefined) ?? "text",
     stream: typeof options.stream === "boolean" ? options.stream : true,
@@ -831,6 +852,7 @@ async function runDoctor(settings: Settings, cwd: string): Promise<Record<string
       artifactDirWritable,
       toolCount,
       mcp,
+      llmRoutes: listResolvedLLMConfigs(settings),
       llm: llmStatus,
     },
   };

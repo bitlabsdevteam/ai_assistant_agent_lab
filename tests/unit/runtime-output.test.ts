@@ -52,6 +52,26 @@ describe("runtime output rendering", () => {
     ]);
   });
 
+  it("renders the working indicator immediately when delay is zero", () => {
+    const writer = new BufferingWriter(true);
+    const renderer = createRuntimeTextRenderer(writer, "text", {
+      workingIndicator: {
+        delayMs: 0,
+      },
+    });
+
+    renderer.onEvent({
+      runId: "run-1",
+      event: "harness.run_started",
+      status: "success",
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(writer.lines).toEqual([
+      "\r\u001b[32mW\u001b[39m\u001b[2mo\u001b[22m\u001b[2mr\u001b[22m\u001b[2mk\u001b[22m\u001b[2mi\u001b[22m\u001b[2mn\u001b[22m\u001b[2mg\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m\u001b[2m.\u001b[22m",
+    ]);
+  });
+
   it("animates the working indicator from left to right in interactive terminals", () => {
     vi.useFakeTimers();
     const writer = new BufferingWriter(true);

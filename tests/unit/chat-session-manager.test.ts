@@ -28,6 +28,25 @@ describe("chat session manager", () => {
     expect(summary).toContain("Conversation Summary");
   });
 
+  it("persists selected provider and model in interactive chat state", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-provider-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const manager = new ChatSessionManager(artifactDir);
+
+    const session = await manager.createSession({
+      workingDirectory: workspace,
+      selectedProvider: "gemini",
+      selectedModel: "gemini-2.5-pro",
+    });
+
+    const interactive = JSON.parse(
+      await readFile(path.join(artifactDir, "chat", session.sessionId, "interactive-session.json"), "utf8"),
+    ) as { selectedProvider?: string; selectedModel?: string };
+
+    expect(interactive.selectedProvider).toBe("gemini");
+    expect(interactive.selectedModel).toBe("gemini-2.5-pro");
+  });
+
   it("prepares linked run requests with session and conversation context", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-request-"));
     const artifactDir = path.join(workspace, ".runs");
@@ -64,6 +83,28 @@ describe("chat session manager", () => {
     expect(second.request.conversationContext?.sessionId).toBe(session.sessionId);
     expect(second.request.conversationContext?.recentTurns.some((turn) => turn.runId === "run-1")).toBe(true);
     expect(second.request.conversationContext?.includedArtifactRefs).toContain("/tmp/run-1/final-report.md");
+  });
+
+  it("carries selected provider and model into prepared run metadata", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-chat-provider-request-"));
+    const artifactDir = path.join(workspace, ".runs");
+    const manager = new ChatSessionManager(artifactDir);
+    const session = await manager.createSession({
+      workingDirectory: workspace,
+      selectedProvider: "anthropic",
+      selectedModel: "claude-3-7-sonnet-latest",
+    });
+
+    const prepared = await manager.prepareTurn({
+      sessionId: session.sessionId,
+      message: "hello",
+      profile: "default",
+      dryRun: false,
+      maxIterations: 1,
+    });
+
+    expect(prepared.request.metadata.selectedProvider).toBe("anthropic");
+    expect(prepared.request.metadata.selectedModel).toBe("claude-3-7-sonnet-latest");
   });
 
   it("compacts older turns into summary while preserving recent turns", async () => {

@@ -27,7 +27,11 @@ describe("headless SDK", () => {
     const session = await client.sessions.create({
       externalUserId: "sdk-user-1",
       workingDirectory: harness.workspace,
+      provider: "anthropic",
+      model: "claude-3-7-sonnet-latest",
     });
+    expect(session.provider).toBe("anthropic");
+    expect(session.model).toBe("claude-3-7-sonnet-latest");
     const eventTypes: string[] = [];
     const result = await client.chat.sendMessageStream(
       session.sessionId,
@@ -62,6 +66,8 @@ describe("headless SDK", () => {
     });
     const firstPass = await client.chat.sendMessageStream(session.sessionId, {
       content: "Create file gated-sdk.txt with content gated hello",
+      provider: "moonshot",
+      model: "kimi-k2-0905-preview",
     });
 
     expect(firstPass.terminalEvent?.type).toBe("approval.required");

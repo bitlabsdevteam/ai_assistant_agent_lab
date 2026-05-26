@@ -95,11 +95,13 @@ describe("schemas", () => {
       sessionId: "session-1",
       updatedAt: new Date().toISOString(),
       mode: "suggest",
+      selectedProvider: "moonshot",
       selectedModel: "gpt-5",
       recentActivitySummary: "Proposed a patch.",
     });
 
     expect(state.mode).toBe("suggest");
+    expect(state.selectedProvider).toBe("moonshot");
     expect(state.selectedModel).toBe("gpt-5");
   });
 

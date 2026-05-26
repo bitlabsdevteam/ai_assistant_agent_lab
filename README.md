@@ -6,7 +6,7 @@
 
 ## Customer Readiness
 
-Customers can use `Argus` today if they are comfortable self-hosting a Node.js CLI or service and supplying OpenAI credentials. The most production-ready entry point is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding.
+Customers can use `Argus` today if they are comfortable self-hosting a Node.js CLI or service and supplying supported LLM provider credentials. The most production-ready entry point is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding.
 
 One important constraint: there is no first-class `argus serve` command yet. API deployment is possible, but it currently requires a small custom Node host that wraps the exported runtime objects.
 
@@ -26,15 +26,22 @@ pnpm build
 
 ## LLM Providers
 
-The runtime uses the OpenAI Responses API with structured JSON output validated against the runtime's Zod schemas.
+The runtime supports native `openai`, `anthropic`, `gemini`, and `moonshot` adapters. Every provider path is schema-first: Argus sends a protected prompt envelope, requires native structured JSON output, and validates the response against the runtime's Zod schemas. There is no prose-parsing fallback mode.
 
-Minimal OpenAI configuration:
+Minimal provider configuration:
 
 ```bash
 export LITTLE_HELPER_LLM_PROVIDER=openai
 export LITTLE_HELPER_LLM_MODEL=gpt-5.4
 export OPENAI_API_KEY=...
 ```
+
+Supported API keys:
+
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `GEMINI_API_KEY`
+- `MOONSHOT_API_KEY`
 
 Perplexity-backed web search tool configuration:
 
@@ -50,7 +57,16 @@ Optional settings:
 
 To allow the built-in `web.search` tool, add `api.perplexity.ai` to `networkAllowlist`.
 
-`argus doctor` now checks configured OpenAI reachability with the selected model when `llmProvider=openai`.
+`argus doctor` checks the resolved analyzer, executor, and evaluator provider routes and reports aggregated health when they differ by role.
+
+Validated v1 structured-output model families:
+
+- `openai`: `gpt-5*`, `o3*`, `o4*`
+- `anthropic`: `claude*`
+- `gemini`: `gemini*`
+- `moonshot`: `kimi*`, `moonshot*`
+
+Role-specific routing and context-window overrides can be configured in `.little-helper.config.json`. `llmContextWindows` accepts either `model` keys or `provider:model` keys.
 
 Role-specific routing can be configured in `.little-helper.config.json`:
 
@@ -72,6 +88,14 @@ Role-specific routing can be configured in `.little-helper.config.json`:
 ```
 
 Global LLM settings act as defaults. `llmRouting` overrides only the specified role fields for `analyzer`, `executor`, or `evaluator`.
+
+Per-surface provider selection:
+
+- CLI runs: `argus run --provider <provider> --model <model> "TASK"` and `argus plan --provider <provider> --model <model> "TASK"`
+- Chat sessions: `argus chat --provider <provider> --model <model>` or in-session `/provider` and `/model`
+- Headless API session creation: `POST /v1/sessions` with `provider` and `model`
+- Headless API message sends: `POST /v1/sessions/:id/messages` with optional per-run `provider` and `model`
+- SDK: `sessions.create({ provider, model })` and `chat.sendMessage(sessionId, { provider, model, ... })`
 
 ## Execution Model
 
@@ -106,7 +130,7 @@ pnpm typecheck
 pnpm test
 ```
 
-For a real agent run with OpenAI:
+For a real agent run with a live provider:
 
 ```bash
 export LITTLE_HELPER_LLM_PROVIDER=openai
@@ -114,16 +138,16 @@ export LITTLE_HELPER_LLM_MODEL=gpt-5.4
 export OPENAI_API_KEY=...
 
 pnpm dev -- doctor
-pnpm dev -- plan "Create a health endpoint"
-pnpm dev -- run "Create a health endpoint"
+pnpm dev -- plan --provider openai --model gpt-5.4 "Create a health endpoint"
+pnpm dev -- run --provider openai --model gpt-5.4 "Create a health endpoint"
 ```
 
 The same live checks also work from the built CLI:
 
 ```bash
 node dist/cli.js doctor
-node dist/cli.js plan "Create a health endpoint"
-node dist/cli.js run "Create a health endpoint"
+node dist/cli.js plan --provider openai --model gpt-5.4 "Create a health endpoint"
+node dist/cli.js run --provider openai --model gpt-5.4 "Create a health endpoint"
 ```
 
 Compatibility note: the current v1 build keeps the existing `LITTLE_HELPER_*` environment variables, `.little-helper.config.json`, and `.little-helper/` artifact paths for backwards compatibility.

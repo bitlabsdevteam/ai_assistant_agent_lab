@@ -43,6 +43,7 @@ import {
   type HarnessStatus,
   type InteractiveSessionState,
   type LLMUsageTelemetryDetails,
+  type LLMProvider,
   type OperatorMode,
   type OutputFormat,
   type Settings,
@@ -63,6 +64,7 @@ export interface ChatCommandOptions {
   new?: boolean;
   stream: boolean;
   mode?: OperatorMode;
+  provider?: LLMProvider;
   model?: string;
 }
 
@@ -122,11 +124,15 @@ export async function runChatCommand(
     : await sessionManager.createSession({
         workingDirectory: options.cwd,
         mode: options.mode ?? "suggest",
+        ...(options.provider ? { selectedProvider: options.provider } : {}),
         ...(options.model ? { selectedModel: options.model } : {}),
       });
   if (options.resume) {
     if (options.mode) {
       await sessionManager.setMode(session.sessionId, options.mode);
+    }
+    if (options.provider !== undefined) {
+      await sessionManager.setSelectedProvider(session.sessionId, options.provider);
     }
     if (options.model !== undefined) {
       await sessionManager.setSelectedModel(session.sessionId, options.model);
@@ -217,6 +223,9 @@ export async function runChatCommand(
         const sessionSettings = resolveInteractiveSettings(baseSettings, interactive);
         const llmStreamRenderer = createRuntimeTextRenderer(consoleAdapter, sessionSettings.outputFormat, {
           textMode: "assistant",
+          workingIndicator: {
+            delayMs: 0,
+          },
         });
         activeTurnRenderer = llmStreamRenderer;
         let latestTokenUsageLine: string | undefined;
@@ -332,7 +341,7 @@ class ReadlineChatConsole implements ChatConsole {
   }
 
   public writeLine(line: string): void {
-    this.rl.write(`${line}\n`);
+    this.write(`${line}\n`);
   }
 }
 
@@ -536,6 +545,22 @@ async function handleCommand(
       dependencies.console.writeLine(`model: ${interactive.selectedModel ?? dependencies.settings.llmModel}`);
       return { session: dependencies.session, interactive, settings: dependencies.settings };
     }
+    case "/provider": {
+      if (args.length === 0) {
+        dependencies.console.writeLine(dependencies.interactive.selectedProvider ?? dependencies.settings.llmProvider);
+        return { session: dependencies.session, interactive: dependencies.interactive, settings: dependencies.settings };
+      }
+      const providerArg = args[0];
+      if (!providerArg) {
+        throw new AppError("VALIDATION_ERROR", "Usage: /provider [openai|anthropic|gemini|moonshot|default]");
+      }
+      const interactive = await dependencies.sessionManager.setSelectedProvider(
+        dependencies.session.sessionId,
+        providerArg === "default" ? undefined : parseProvider(providerArg),
+      );
+      dependencies.console.writeLine(`provider: ${interactive.selectedProvider ?? dependencies.settings.llmProvider}`);
+      return { session: dependencies.session, interactive, settings: dependencies.settings };
+    }
     case "/mode": {
       if (args.length === 0) {
         dependencies.console.writeLine(`mode: ${dependencies.interactive.mode}`);
@@ -569,6 +594,7 @@ async function handleCommand(
       const next = await dependencies.sessionManager.createSession({
         workingDirectory: dependencies.session.workingDirectory,
         mode: dependencies.interactive.mode,
+        ...(dependencies.interactive.selectedProvider ? { selectedProvider: dependencies.interactive.selectedProvider } : {}),
         ...(dependencies.interactive.selectedModel ? { selectedModel: dependencies.interactive.selectedModel } : {}),
       });
       const interactive = await dependencies.sessionManager.loadInteractiveState(next.sessionId);
@@ -721,6 +747,9 @@ async function resumeRunInChat(
   const sessionSettings = resolveInteractiveSettings(dependencies.settings, dependencies.interactive);
   const llmStreamRenderer = createRuntimeTextRenderer(dependencies.console, sessionSettings.outputFormat, {
     textMode: "assistant",
+    workingIndicator: {
+      delayMs: 0,
+    },
   });
   const orchestrator = dependencies.createOrchestrator(
     sessionSettings,
@@ -1014,6 +1043,7 @@ function renderHelp(): string {
     "/approve <approvalId>",
     "/deny <approvalId>",
     "/mode [suggest|auto-edit|full-auto]",
+    "/provider [openai|anthropic|gemini|moonshot|default]",
     "/model [modelId|default]",
     "/diff <runId>",
     "/review <runId>",
@@ -1033,6 +1063,7 @@ function renderStatus(
     `status: ${session.status}`,
     `turns: ${session.turns}`,
     `mode: ${interactive.mode}`,
+    `provider: ${interactive.selectedProvider ?? "default"}`,
     `model: ${interactive.selectedModel ?? "default"}`,
     `activeRunId: ${session.activeRunId ?? "none"}`,
     `pendingPatch: ${interactive.pendingPatchArtifact ?? "none"}`,
@@ -1044,7 +1075,7 @@ function renderStatus(
 
 function renderWelcome(sessionId: string, interactive: InteractiveSessionState): string {
   const lines = [
-    `Chat session ${sessionId}. mode=${interactive.mode} model=${interactive.selectedModel ?? "default"}. Use /help for commands.`,
+    `Chat session ${sessionId}. mode=${interactive.mode} provider=${interactive.selectedProvider ?? "default"} model=${interactive.selectedModel ?? "default"}. Use /help for commands.`,
   ];
   if (interactive.latestTokenUsageLine) {
     lines.push(interactive.latestTokenUsageLine);
@@ -1072,6 +1103,7 @@ function createSyntheticTurnId(prefix: string, runId: string): string {
 function resolveInteractiveSettings(base: Settings, interactive: InteractiveSessionState): Settings {
   return {
     ...base,
+    llmProvider: interactive.selectedProvider ?? base.llmProvider,
     llmModel: interactive.selectedModel ?? base.llmModel,
   };
 }
@@ -1106,6 +1138,13 @@ function parseMode(value: string): OperatorMode {
     return value;
   }
   throw new AppError("VALIDATION_ERROR", `Invalid mode: ${value}`);
+}
+
+function parseProvider(value: string): LLMProvider {
+  if (value === "openai" || value === "anthropic" || value === "gemini" || value === "moonshot") {
+    return value;
+  }
+  throw new AppError("VALIDATION_ERROR", `Invalid provider: ${value}`);
 }
 
 async function renderDiffSummary(artifactDir: string, runId: string): Promise<string> {

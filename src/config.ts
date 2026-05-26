@@ -7,10 +7,11 @@ import { z } from "zod";
 
 import { AppError } from "./errors.js";
 import { loadWorkspaceEnv } from "./env.js";
+import { getProviderApiKeyEnvVar } from "./llm/capabilities.js";
 import { listResolvedLLMConfigs } from "./llm/routing.js";
 import { mergeMCPServerConfigs } from "./mcp/config-manager.js";
 import { resolveSkillDirectories } from "./skills/registry.js";
-import { SettingsSchema, type ApprovalMode, type OutputFormat, type Settings } from "./schemas.js";
+import { SettingsSchema, type ApprovalMode, type LLMProvider, type OutputFormat, type Settings } from "./schemas.js";
 
 const PartialSettingsSchema = SettingsSchema.partial();
 
@@ -18,6 +19,8 @@ export interface CliOverrides {
   artifactDir?: string;
   approvalMode?: ApprovalMode;
   cwd?: string;
+  llmModel?: string;
+  llmProvider?: LLMProvider;
   maxIterations?: number;
   outputFormat?: OutputFormat;
   stream?: boolean;
@@ -42,7 +45,7 @@ async function readJsonFileIfExists(filePath: string): Promise<Record<string, un
 }
 
 function parseEnvSettings(env: NodeJS.ProcessEnv): Record<string, unknown> {
-  return {
+  return omitUndefined({
     env: env.LITTLE_HELPER_ENV,
     logLevel: env.LITTLE_HELPER_LOG_LEVEL,
     artifactDir: env.LITTLE_HELPER_ARTIFACT_DIR,
@@ -56,7 +59,7 @@ function parseEnvSettings(env: NodeJS.ProcessEnv): Record<string, unknown> {
       : undefined,
     maxIterations: env.LITTLE_HELPER_MAX_ITERATIONS ? Number(env.LITTLE_HELPER_MAX_ITERATIONS) : undefined,
     approvalMode: env.LITTLE_HELPER_APPROVAL_MODE,
-  };
+  });
 }
 
 export async function loadSettings(
@@ -77,6 +80,8 @@ export async function loadSettings(
   const cliConfig: Record<string, unknown> = {
     ...(overrides.artifactDir ? { artifactDir: overrides.artifactDir } : {}),
     ...(overrides.approvalMode ? { approvalMode: overrides.approvalMode } : {}),
+    ...(overrides.llmProvider ? { llmProvider: overrides.llmProvider } : {}),
+    ...(overrides.llmModel ? { llmModel: overrides.llmModel } : {}),
     ...(typeof overrides.maxIterations === "number" ? { maxIterations: overrides.maxIterations } : {}),
     ...(overrides.outputFormat ? { outputFormat: overrides.outputFormat } : {}),
     ...(typeof overrides.stream === "boolean" ? { stream: overrides.stream } : {}),
@@ -132,15 +137,20 @@ function normalizeRoots(workingDirectory: string, roots?: string[]): string[] {
   return [...new Set(input.map((item) => (path.isAbsolute(item) ? item : path.join(workingDirectory, item))))];
 }
 
+function omitUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
 export function validateProductionSettings(settings: Settings, env: NodeJS.ProcessEnv = process.env): void {
   if (settings.env !== "production") {
     return;
   }
   for (const { role, config } of listResolvedLLMConfigs(settings)) {
-    if (!env.OPENAI_API_KEY) {
+    const apiKeyEnv = getProviderApiKeyEnvVar(config.provider);
+    if (!env[apiKeyEnv]) {
       throw new AppError(
         "CONFIG_ERROR",
-        `Production mode with llmProvider 'openai' requires OPENAI_API_KEY for role '${role}'.`,
+        `Production mode with llmProvider '${config.provider}' requires ${apiKeyEnv} for role '${role}'.`,
       );
     }
   }

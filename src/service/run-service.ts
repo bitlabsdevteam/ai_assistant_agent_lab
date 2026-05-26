@@ -36,8 +36,22 @@ export class RunService {
     sessionId: string,
     input: unknown,
   ): Promise<{ response: HeadlessMessageResponse; runRequest: RunRequest; turnId: string }> {
-    const session = await this.requireSession(tenantId, sessionId);
+    let session = await this.requireSession(tenantId, sessionId);
     const parsed = HeadlessMessageCreateInputSchema.parse(input);
+    if (parsed.provider !== undefined) {
+      await this.chatSessions.setSelectedProvider(sessionId, parsed.provider);
+    }
+    if (parsed.model !== undefined) {
+      await this.chatSessions.setSelectedModel(sessionId, parsed.model);
+    }
+    if (parsed.provider !== undefined || parsed.model !== undefined) {
+      session = await this.sessions.update({
+        ...session,
+        ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
+        ...(parsed.model !== undefined ? { model: parsed.model } : {}),
+        updatedAt: this.timestamp(),
+      });
+    }
     const runId = createRunId(this.now());
     const prepared = await this.chatSessions.prepareTurn({
       sessionId,

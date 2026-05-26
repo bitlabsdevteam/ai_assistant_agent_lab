@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { AppError } from "../errors.js";
+import { assertStructuredOutputSupport } from "./capabilities.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse, LLMStreamCallbacks } from "./client.js";
 import { zodToJsonSchema } from "./json-schema.js";
 import { renderPromptEnvelopeForTransport } from "./prompts.js";
@@ -52,6 +53,7 @@ export class OpenAIResponsesClient implements LLMClient {
   private readonly apiKey: string | undefined;
 
   public constructor(private readonly config: ResolvedLLMConfig, env: NodeJS.ProcessEnv = process.env) {
+    assertStructuredOutputSupport(config);
     this.baseUrl = config.baseUrl ?? "https://api.openai.com/v1";
     this.apiKey = env.OPENAI_API_KEY;
   }
@@ -211,7 +213,7 @@ export class OpenAIResponsesClient implements LLMClient {
   }
 
   private resolveContextWindowTokens(): number {
-    const resolved = this.config.contextWindowTokens ?? resolveBuiltInContextWindow(this.config.model);
+    const resolved = this.config.contextWindowTokens ?? resolveBuiltInContextWindow(this.config.provider, this.config.model);
     if (resolved === undefined) {
       throw new AppError("CONFIG_ERROR", `Context window is unknown for model '${this.config.model}'.`, {
         details: { model: this.config.model, provider: this.config.provider },

@@ -8,7 +8,7 @@ import { discoverSkillCatalog, selectSkills } from "./skills/registry.js";
 import { MetricsCollector } from "./telemetry/metrics.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { HarnessController, type RunResult } from "./harness/controller.js";
-import type { RunRequest, Settings, TelemetryEvent } from "./schemas.js";
+import { RunRequestSchema, type RunRequest, type Settings, type TelemetryEvent } from "./schemas.js";
 
 export interface OrchestratorOptions {
   onEvent?: (event: TelemetryEvent) => void | Promise<void>;
@@ -34,12 +34,18 @@ export class Orchestrator {
     const runId = options.runId ?? createRunId();
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
-    const llm = this.options.llm ?? createLLMClient(this.settings);
+    const resolvedSettings = resolveSettingsForRun(this.settings, request);
+    const llm = this.options.llm ?? createLLMClient(resolvedSettings);
     const skillCatalog = await discoverSkillCatalog(this.settings);
     const selectedSkills = selectSkills(request.task, skillCatalog.skills);
     const enrichedRequest: RunRequest = {
       ...request,
       selectedSkills,
+      metadata: sanitizeMetadata({
+        ...(request.metadata as Record<string, unknown>),
+        selectedProvider: resolvedSettings.llmProvider,
+        selectedModel: resolvedSettings.llmModel,
+      }) as RunRequest["metadata"],
     };
     const controller = new HarnessController({
       runStore,
@@ -60,7 +66,8 @@ export class Orchestrator {
     const runStore = new RunStore(this.settings.artifactDir);
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
-    const llm = this.options.llm ?? createLLMClient(this.settings);
+    const request = await artifactStore.readJson<RunRequest>("request.json");
+    const llm = this.options.llm ?? createLLMClient(resolveSettingsForRun(this.settings, RunRequestSchema.parse(request)));
     const controller = new HarnessController({
       runStore,
       artifactStore,
@@ -79,7 +86,8 @@ export class Orchestrator {
     const runStore = new RunStore(this.settings.artifactDir);
     const artifactStore = runStore.createArtifactStore(runId);
     const tools = await ToolRegistry.create(this.settings);
-    const llm = this.options.llm ?? createLLMClient(this.settings);
+    const request = await artifactStore.readJson<RunRequest>("request.json");
+    const llm = this.options.llm ?? createLLMClient(resolveSettingsForRun(this.settings, RunRequestSchema.parse(request)));
     const controller = new HarnessController({
       runStore,
       artifactStore,
@@ -94,4 +102,18 @@ export class Orchestrator {
     });
     return controller.resume();
   }
+}
+
+function resolveSettingsForRun(settings: Settings, request: RunRequest): Settings {
+  return {
+    ...settings,
+    llmProvider: request.metadata.selectedProvider ?? settings.llmProvider,
+    llmModel: request.metadata.selectedModel ?? settings.llmModel,
+  };
+}
+
+function sanitizeMetadata(metadata: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([, value]) => typeof value === "string"),
+  ) as Record<string, string>;
 }

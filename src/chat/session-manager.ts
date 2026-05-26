@@ -12,6 +12,7 @@ import {
   type ChatTurnRecord,
   type HarnessStatus,
   type InteractiveSessionState,
+  type LLMProvider,
   type OperatorMode,
   type RunRequest,
 } from "../schemas.js";
@@ -26,6 +27,7 @@ export interface PendingSessionApproval extends ApprovalRequest {
 export interface CreateChatSessionInput {
   workingDirectory: string;
   mode?: OperatorMode;
+  selectedProvider?: LLMProvider;
   selectedModel?: string;
 }
 
@@ -90,6 +92,7 @@ export class ChatSessionManager {
         sessionId: session.sessionId,
         updatedAt: now,
         mode: input.mode ?? "suggest",
+        ...(input.selectedProvider ? { selectedProvider: input.selectedProvider } : {}),
         ...(input.selectedModel ? { selectedModel: input.selectedModel } : {}),
         recentActivitySummary: "",
       }),
@@ -174,6 +177,7 @@ export class ChatSessionManager {
         sessionId: updatedSession.sessionId,
         turnId,
         sessionMode: interactive.mode,
+        ...(interactive.selectedProvider ? { selectedProvider: interactive.selectedProvider } : {}),
         ...(interactive.selectedModel ? { selectedModel: interactive.selectedModel } : {}),
       },
       conversationContext: context,
@@ -280,6 +284,20 @@ export class ChatSessionManager {
       ...current,
       updatedAt: this.timestamp(),
       mode,
+    });
+    await this.persistInteractiveState(next);
+    return next;
+  }
+
+  public async setSelectedProvider(
+    sessionId: string,
+    selectedProvider?: LLMProvider,
+  ): Promise<InteractiveSessionState> {
+    const current = await this.loadInteractiveState(sessionId);
+    const next = InteractiveSessionStateSchema.parse({
+      ...current,
+      updatedAt: this.timestamp(),
+      ...(selectedProvider ? { selectedProvider } : { selectedProvider: undefined }),
     });
     await this.persistInteractiveState(next);
     return next;

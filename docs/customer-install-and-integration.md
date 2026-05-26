@@ -1,6 +1,6 @@
 # Customer Install and Integration Guide
 
-Yes. A customer can use `Argus` today if they are comfortable self-hosting a Node.js CLI or service and supplying OpenAI credentials. The most production-ready entry point today is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding. One important constraint applies up front: there is not currently a first-class `argus serve` command, so API deployment requires a small custom Node host that wraps the exported runtime objects.
+Yes. A customer can use `Argus` today if they are comfortable self-hosting a Node.js CLI or service and supplying supported provider credentials. The most production-ready entry point today is the CLI, Docker packaging exists for deployment, and the repository also exposes a tested SDK plus headless HTTP/SSE runtime for embedding. One important constraint applies up front: there is not currently a first-class `argus serve` command, so API deployment requires a small custom Node host that wraps the exported runtime objects.
 
 ## Recommended Adoption Path
 
@@ -17,11 +17,12 @@ Customers should provision these prerequisites before installation:
 
 - Node.js `22+`
 - `pnpm` `9+`
-- `OPENAI_API_KEY`
+- one provider API key:
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `MOONSHOT_API_KEY`
 - Optional `PERPLEXITY_API_KEY` for `web.search`
 - Persistent storage for `.little-helper/runs`
 
-OpenAI is the documented primary LLM provider. Perplexity-backed web search is optional and should be treated as an add-on.
+Supported native LLM providers are `openai`, `anthropic`, `gemini`, and `moonshot`. Perplexity-backed web search is optional and should be treated as an add-on.
 
 ## Install And Smoke Test
 
@@ -32,7 +33,7 @@ Install and validate the runtime in this order:
 3. Run `pnpm build`.
 4. Export `LITTLE_HELPER_LLM_PROVIDER=openai`.
 5. Export `LITTLE_HELPER_LLM_MODEL=<chosen model>`.
-6. Export `OPENAI_API_KEY=<key>`.
+6. Export the API key for the provider you selected.
 7. Run `node dist/cli.js doctor` or `argus doctor` after linking or installing the package.
 8. Run a smoke test with `argus plan "Create a health endpoint"` and then `argus run "Create a health endpoint"`.
 
@@ -129,6 +130,7 @@ Notes:
 - `networkAllowlist` is required for policy-gated network tools. Add `api.perplexity.ai` only if you want `web.search`.
 - `validationCommands` are arrays of argv tokens, not shell strings.
 - Global `llmProvider` and `llmModel` act as defaults. `llmRouting` overrides specific analyzer, executor, or evaluator roles.
+- Provider/model can also be selected per CLI run, per chat session, per headless session, or per headless message.
 
 Typical CLI commands for customer operations:
 
@@ -221,6 +223,8 @@ The SDK currently exposes these client methods:
 - `approvals.list`
 - `approvals.decide`
 
+`sessions.create` accepts `provider` and `model`. `chat.sendMessage` and `chat.sendMessageStream` also accept optional `provider` and `model` overrides for per-run vendor selection.
+
 ### Headless HTTP And SSE Surfaces
 
 The headless API currently exposes these routes:
@@ -266,7 +270,7 @@ For CLI-first customers, steps 1 through 5 are the minimum production-readiness 
 
 - Default recommendation: CLI-first adoption.
 - Default audience: customer engineer, not a non-technical operator.
-- Primary provider: OpenAI.
+- Supported native providers: OpenAI, Anthropic, Gemini, and Moonshot.
 - Optional add-on: Perplexity-backed `web.search`.
 - Container deployment: supported as packaging around the same runtime.
 - Current API constraint: server deployment needs a custom bootstrap because there is no dedicated `serve` command yet.

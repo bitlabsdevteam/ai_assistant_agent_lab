@@ -1,5 +1,6 @@
 export type ClientRunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "blocked";
 export type ClientApprovalDecision = "approved" | "denied";
+export type ClientLLMProvider = "openai" | "anthropic" | "gemini" | "moonshot";
 export type ClientStreamEventType =
   | "session.created"
   | "message.created"
@@ -20,6 +21,7 @@ export interface SessionCreateInput {
   workingDirectory: string;
   profile?: string;
   mode?: "suggest" | "auto-edit" | "full-auto";
+  provider?: ClientLLMProvider;
   model?: string;
 }
 
@@ -27,6 +29,8 @@ export interface SessionResponse {
   sessionId: string;
   status: string;
   createdAt: string;
+  provider?: ClientLLMProvider;
+  model?: string;
 }
 
 export interface SessionSummary {
@@ -37,6 +41,8 @@ export interface SessionSummary {
   updatedAt: string;
   activeRunId?: string;
   pendingApprovalsCount: number;
+  provider?: ClientLLMProvider;
+  model?: string;
   metadata: Record<string, unknown>;
 }
 
@@ -54,6 +60,8 @@ export interface MessageRecord {
 export interface MessageCreateInput {
   content: string;
   metadata?: Record<string, unknown>;
+  provider?: ClientLLMProvider;
+  model?: string;
 }
 
 export interface MessageResponse {

@@ -3,6 +3,9 @@ import type { z } from "zod";
 import { AppError } from "../errors.js";
 import type { Settings } from "../schemas.js";
 import type { LLMClient, LLMGenerateRequest, LLMGenerateResponse } from "./client.js";
+import { AnthropicClient } from "./anthropic.js";
+import { GeminiClient } from "./gemini.js";
+import { MoonshotClient } from "./moonshot.js";
 import { OpenAIResponsesClient } from "./openai.js";
 import { listResolvedLLMConfigs, resolveLLMConfigForRole, type ResolvedLLMConfig } from "./routing.js";
 import type { LLMTokenCount } from "../schemas.js";
@@ -114,8 +117,15 @@ export function createLLMClient(settings: Settings, env: NodeJS.ProcessEnv = pro
 }
 
 function createProviderClient(config: ResolvedLLMConfig, env: NodeJS.ProcessEnv): LLMClient {
-  if (config.provider === "openai") {
-    return new OpenAIResponsesClient(config, env);
+  switch (config.provider) {
+    case "openai":
+      return new OpenAIResponsesClient(config, env);
+    case "anthropic":
+      return new AnthropicClient(config, env);
+    case "gemini":
+      return new GeminiClient(config, env);
+    case "moonshot":
+      return new MoonshotClient(config, env);
   }
   return new UnsupportedLLMClient(config.provider, config.model);
 }

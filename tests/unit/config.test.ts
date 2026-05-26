@@ -21,6 +21,12 @@ const testProdOpenAIEnvMissingKey: NodeJS.ProcessEnv = {
   LITTLE_HELPER_LLM_MODEL: "gpt-5.4",
 };
 
+const testProdAnthropicEnvMissingKey: NodeJS.ProcessEnv = {
+  LITTLE_HELPER_ENV: "production",
+  LITTLE_HELPER_LLM_PROVIDER: "anthropic",
+  LITTLE_HELPER_LLM_MODEL: "claude-3-7-sonnet-latest",
+};
+
 describe("loadSettings", () => {
   it("applies project config, env, and cli override precedence", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-config-"));
@@ -78,6 +84,22 @@ describe("loadSettings", () => {
         testProdOpenAIEnvMissingKey,
       ),
     ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("requires only the resolved provider credential set in production", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-prod-anthropic-"));
+
+    await expect(loadSettings(workspace, {}, testProdAnthropicEnvMissingKey)).rejects.toBeInstanceOf(AppError);
+
+    await expect(
+      loadSettings(workspace, {}, {
+        ...testProdAnthropicEnvMissingKey,
+        ANTHROPIC_API_KEY: "test-key",
+      }),
+    ).resolves.toMatchObject({
+      llmProvider: "anthropic",
+      llmModel: "claude-3-7-sonnet-latest",
+    });
   });
 
   it("loads environment settings and secrets from the workspace .env file", async () => {
@@ -145,5 +167,46 @@ describe("loadSettings", () => {
         },
       ),
     ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("accepts all supported providers in global config and role overrides", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "little-helper-multi-provider-"));
+    await writeFile(
+      path.join(workspace, ".little-helper.config.json"),
+      JSON.stringify({
+        llmProvider: "moonshot",
+        llmModel: "kimi-k2-0905-preview",
+        llmRouting: {
+          analyzer: {
+            provider: "openai",
+            model: "gpt-5.4-mini",
+          },
+          executor: {
+            provider: "anthropic",
+            model: "claude-3-7-sonnet-latest",
+          },
+          evaluator: {
+            provider: "gemini",
+            model: "gemini-2.5-pro",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    await expect(loadSettings(workspace, {}, {})).resolves.toMatchObject({
+      llmProvider: "moonshot",
+      llmRouting: {
+        analyzer: {
+          provider: "openai",
+        },
+        executor: {
+          provider: "anthropic",
+        },
+        evaluator: {
+          provider: "gemini",
+        },
+      },
+    });
   });
 });

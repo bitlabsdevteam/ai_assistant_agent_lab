@@ -22,6 +22,7 @@ export const ToolCategorySchema = z.enum([
 ]);
 export const ContextCompactionModeSchema = z.enum(["full", "compact", "aggressive"]);
 export const LLMUsageStageSchema = z.enum(["preflight", "compaction", "response"]);
+export const LLMProviderSchema = z.enum(["openai", "anthropic", "gemini", "moonshot"]);
 
 export const ChatTurnRoleSchema = z.enum(["user", "assistant", "system"]);
 export const ChatSessionStatusSchema = z.enum(["idle", "running", "awaiting_approval", "blocked"]);
@@ -97,6 +98,7 @@ export const RunRequestSchema = z.object({
       sessionId: z.string().min(1).optional(),
       turnId: z.string().min(1).optional(),
       sessionMode: OperatorModeSchema.optional(),
+      selectedProvider: LLMProviderSchema.optional(),
       selectedModel: z.string().min(1).optional(),
     })
     .catchall(z.string())
@@ -369,6 +371,7 @@ export const InteractiveSessionStateSchema = z.object({
   sessionId: z.string().min(1),
   updatedAt: z.string(),
   mode: OperatorModeSchema.default("suggest"),
+  selectedProvider: LLMProviderSchema.optional(),
   selectedModel: z.string().min(1).optional(),
   activeRunId: z.string().min(1).optional(),
   pendingPatchArtifact: z.string().min(1).optional(),
@@ -446,6 +449,7 @@ export const HeadlessSessionRecordSchema = z.object({
   workingDirectory: z.string().min(1),
   profile: z.string().min(1),
   mode: OperatorModeSchema.default("full-auto"),
+  provider: LLMProviderSchema.optional(),
   model: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).default({}),
   status: HeadlessRunStatusSchema.or(z.literal("idle")).default("idle"),
@@ -529,6 +533,7 @@ export const HeadlessSessionCreateInputSchema = z.object({
   workingDirectory: z.string().min(1),
   profile: z.string().min(1).default("default"),
   mode: OperatorModeSchema.optional(),
+  provider: LLMProviderSchema.optional(),
   model: z.string().min(1).optional(),
 });
 
@@ -536,6 +541,8 @@ export const HeadlessSessionResponseSchema = z.object({
   sessionId: z.string().min(1),
   status: z.string().min(1),
   createdAt: z.string(),
+  provider: LLMProviderSchema.optional(),
+  model: z.string().min(1).optional(),
 });
 
 export const HeadlessSessionSummarySchema = z.object({
@@ -546,12 +553,16 @@ export const HeadlessSessionSummarySchema = z.object({
   updatedAt: z.string(),
   activeRunId: z.string().min(1).optional(),
   pendingApprovalsCount: z.number().int().nonnegative(),
+  provider: LLMProviderSchema.optional(),
+  model: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()),
 });
 
 export const HeadlessMessageCreateInputSchema = z.object({
   content: z.string().min(1),
   metadata: z.record(z.string(), z.unknown()).default({}),
+  provider: LLMProviderSchema.optional(),
+  model: z.string().min(1).optional(),
 });
 
 export const HeadlessMessageResponseSchema = z.object({
@@ -765,7 +776,7 @@ export const ToolDescriptorSchema = z.object({
 });
 
 export const LLMTokenCountSchema = z.object({
-  provider: z.string().min(1),
+  provider: LLMProviderSchema,
   model: z.string().min(1),
   inputTokens: z.number().int().nonnegative(),
   contextWindowTokens: z.number().int().positive(),
@@ -775,7 +786,7 @@ export const TokenUsageSnapshotSchema = z.object({
   runId: z.string().min(1),
   phase: z.enum(["analyzer", "executor", "evaluator"]),
   model: z.string().min(1),
-  provider: z.string().min(1),
+  provider: LLMProviderSchema,
   contextWindowTokens: z.number().int().positive(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
@@ -795,7 +806,7 @@ export const TokenUsageSnapshotSchema = z.object({
 export const LLMUsageTelemetryDetailsSchema = z.object({
   phase: z.enum(["analyzer", "executor", "evaluator"]),
   model: z.string().min(1),
-  provider: z.string().min(1),
+  provider: LLMProviderSchema,
   contextWindowTokens: z.number().int().positive(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
@@ -810,7 +821,7 @@ export const LLMUsageTelemetryDetailsSchema = z.object({
 });
 
 export const LLMRoleOverrideSchema = z.object({
-  provider: z.literal("openai").optional(),
+  provider: LLMProviderSchema.optional(),
   model: z.string().min(1).optional(),
   baseUrl: z.string().url().optional(),
   organization: z.string().min(1).optional(),
@@ -821,7 +832,7 @@ export const SettingsSchema = z.object({
   env: z.enum(["development", "test", "production"]).default("development"),
   logLevel: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
   artifactDir: z.string().min(1).default(".little-helper/runs"),
-  llmProvider: z.literal("openai").default("openai"),
+  llmProvider: LLMProviderSchema.default("openai"),
   llmModel: z.string().min(1).default("gpt-5.4"),
   llmBaseUrl: z.string().url().optional(),
   llmOrganization: z.string().min(1).optional(),
@@ -873,6 +884,7 @@ export type PermissionScope = z.infer<typeof PermissionScopeSchema>;
 export type ToolCategory = z.infer<typeof ToolCategorySchema>;
 export type ContextCompactionMode = z.infer<typeof ContextCompactionModeSchema>;
 export type LLMUsageStage = z.infer<typeof LLMUsageStageSchema>;
+export type LLMProvider = z.infer<typeof LLMProviderSchema>;
 export type ChatTurnRole = z.infer<typeof ChatTurnRoleSchema>;
 export type ChatSessionStatus = z.infer<typeof ChatSessionStatusSchema>;
 export type HeadlessRunStatus = z.infer<typeof HeadlessRunStatusSchema>;

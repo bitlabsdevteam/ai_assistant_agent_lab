@@ -27,7 +27,7 @@ pnpm typecheck
 pnpm test
 ```
 
-For a real OpenAI-backed agent run:
+For a real provider-backed agent run:
 
 ```bash
 export LITTLE_HELPER_LLM_PROVIDER=openai
@@ -35,8 +35,8 @@ export LITTLE_HELPER_LLM_MODEL=gpt-5.4
 export OPENAI_API_KEY=...
 
 pnpm dev -- doctor
-pnpm dev -- plan "Create a health endpoint"
-pnpm dev -- run "Create a health endpoint"
+pnpm dev -- plan --provider openai --model gpt-5.4 "Create a health endpoint"
+pnpm dev -- run --provider openai --model gpt-5.4 "Create a health endpoint"
 ```
 
 The runtime also reads a workspace `.env`, so the same values can be stored in the same format as `.env.example`.
@@ -50,7 +50,7 @@ docker build -t argus-agent .
 docker run --rm argus-agent version
 ```
 
-To run against the current workspace with OpenAI credentials:
+To run against the current workspace with provider credentials:
 
 ```bash
 docker run --rm \
@@ -98,7 +98,9 @@ The checked-in `docker-compose.yml` is intentionally limited to a simple contain
 
 - Inject environment variables through the deployment platform.
 - Mount persistent storage for `.little-helper/runs`.
-- Provide `OPENAI_API_KEY` for every deployed environment.
-- Set `LITTLE_HELPER_LLM_PROVIDER=openai` and `LITTLE_HELPER_LLM_MODEL=<chosen model>`.
+- Provide the API key required by the resolved provider set:
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `MOONSHOT_API_KEY`.
+- Set `LITTLE_HELPER_LLM_PROVIDER=<provider>` and `LITTLE_HELPER_LLM_MODEL=<chosen model>`.
+- Keep `doctor` in the deployment checklist. It now validates the resolved analyzer/executor/evaluator provider routes, not only one global route.
 - If enabling `web.search`, provide `PERPLEXITY_API_KEY` and allowlist `api.perplexity.ai`.
 - Use explicit model, approval mode, and artifact retention settings in production.
